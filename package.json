@@ -1,0 +1,46 @@
+{
+  "name": "cinema-bar",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "개인 영화 예매 오픈 감시 메뉴바 앱",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "node scripts/installRuntime.mjs && npm run compile && vite build && electron .",
+    "compile": "tsc -p tsconfig.electron.json && esbuild electron/preload.ts --bundle --platform=node --format=cjs --external:electron --outfile=dist-electron/preload.cjs",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint . && tsc --noEmit && tsc -p tsconfig.electron.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build": "tsc --noEmit && npm run compile && vite build && node scripts/packageApp.mjs",
+    "test:desktop": "node scripts/desktopSmoke.mjs",
+    "probe:providers": "npm run compile && node scripts/probeProviders.mjs"
+  },
+  "dependencies": {
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@electron/packager": "20.3.0",
+    "@eslint/js": "9.39.1",
+    "@testing-library/react": "16.3.3",
+    "@testing-library/user-event": "14.6.8",
+    "@types/node": "26.6.5",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "electron": "44.9.1",
+    "esbuild": "0.28.2",
+    "eslint": "9.39.1",
+    "eslint-plugin-react": "7.37.5",
+    "eslint-plugin-react-hooks": "7.1.1",
+    "eslint-plugin-react-refresh": "0.5.7",
+    "globals": "17.13.0",
+    "jsdom": "30.1.3",
+    "prettier": "3.9.10",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.72.0",
+    "vite": "8.3.4",
+    "vitest": "5.0.5"
+  }
+}

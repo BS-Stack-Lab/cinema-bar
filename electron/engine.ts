@@ -2,19 +2,24 @@ import { randomUUID } from 'node:crypto';
 import { Store } from './store.js';
 import { SecretStore } from './secretStore.js';
 import { eligibleSessions, ProviderError, type ProviderAdapter } from './providers/index.js';
-import {
-  sessionIdentity,
-  validateRule,
-  validateSettings,
-  text,
-  koreanToday,
-} from './validation.js';
+import { sessionIdentity, validateRule, validateSettings, text } from './validation.js';
 import type { DeliveryResult } from './discord.js';
-import type { HistoryItem, Provider, RuleInput, Session, Snapshot, State } from './types.js';
+import { isRuleEligible } from './eligibility.js';
+import type {
+  HistoryItem,
+  LocalAlertResult,
+  Provider,
+  RuleInput,
+  Session,
+  Snapshot,
+  State,
+} from './types.js';
 const MAX_AGE = 24 * 60 * 60 * 1000;
 export interface EngineDependencies {
   providers: Record<Provider, ProviderAdapter>;
   deliver: (url: string, session: Session, signal: AbortSignal) => Promise<DeliveryResult>;
+  notifyLocal?: (session: Session, signal: AbortSignal) => Promise<LocalAlertResult>;
+  isLocalAlertSupported?: () => boolean;
   now?: () => number;
   random?: () => number;
 }
@@ -23,6 +28,10 @@ export class Engine {
   private timer?: ReturnType<typeof setTimeout>;
   private running?: Promise<void>;
   private controller?: AbortController;
+  private discordController?: AbortController;
+  private localController?: AbortController;
+  private localRevision = 0;
+  localAlertWarning?: string;
   private needsRefresh = false;
   private shouldForce = false;
   private isStopped = false;
@@ -61,6 +70,10 @@ export class Engine {
       ),
       history: s.history,
       pendingCount: s.outbox.length,
+      localPendingCount: s.localOutbox.length,
+      isLocalAlertSupported:
+        this.dependencies.isLocalAlertSupported?.() ?? !!this.dependencies.notifyLocal,
+      localAlertWarning: this.localAlertWarning,
       hasWebhook: !!s.secret.encrypted,
       isWebhookBlocked: s.secret.isTerminal,
       isEncryptionAvailable: this.secrets.isAvailable(),
@@ -87,6 +100,8 @@ export class Engine {
     clearTimeout(this.timer);
     this.timer = undefined;
     this.controller?.abort();
+    this.discordController?.abort();
+    this.localController?.abort();
     this.needsRefresh = false;
   }
   stop() {
@@ -160,15 +175,21 @@ export class Engine {
     return this.snapshot();
   }
   private removeRuleQueue(s: State, id: string) {
-    s.outbox = s.outbox.flatMap((item) => {
-      const ruleRefs = item.ruleRefs.filter((ref) => ref.id !== id);
-      if (!ruleRefs.length) {
-        if (s.dedupe[item.id] === 0) delete s.dedupe[item.id];
-        return [];
-      }
-      return [{ ...item, ruleRefs }];
-    });
+    for (const destination of ['outbox', 'localOutbox'] as const) {
+      const dedupe = destination === 'outbox' ? s.dedupe : s.localDedupe;
+      const queue = s[destination].flatMap((item) => {
+        const ruleRefs = item.ruleRefs.filter((ref) => ref.id !== id);
+        if (!ruleRefs.length) {
+          if (dedupe[item.id] === 0) delete dedupe[item.id];
+          return [];
+        }
+        return [{ ...item, ruleRefs }];
+      });
+      if (destination === 'outbox') s.outbox = queue as State['outbox'];
+      else s.localOutbox = queue;
+    }
   }
+
   async deleteRule(id: string) {
     text(id, 80);
     this.invalidate();
@@ -191,7 +212,7 @@ export class Engine {
   }
   async saveWebhook(value: string) {
     const encrypted = this.secrets.encode(value);
-    this.invalidate();
+    this.discordController?.abort();
     await this.store.mutate((s) => {
       s.secret = { encrypted, revision: s.secret.revision + 1, isTerminal: false };
       this.clearPending(s);
@@ -200,7 +221,7 @@ export class Engine {
     return this.snapshot();
   }
   async deleteWebhook() {
-    this.invalidate();
+    this.discordController?.abort();
     await this.store.mutate((s) => {
       s.secret = { revision: s.secret.revision + 1, isTerminal: false };
       this.clearPending(s);
@@ -216,11 +237,21 @@ export class Engine {
   }
   async updateSettings(input: unknown) {
     const value = validateSettings(input);
-    this.invalidate();
+    if (value.shouldNotifyLocally === false) {
+      this.localRevision++;
+      this.localController?.abort();
+    }
     await this.store.mutate((s) => {
       Object.assign(s.settings, value);
-      for (const p of Object.values(s.progress))
-        p.nextAt = this.now() + s.settings.intervalSeconds * 1000;
+      if (value.shouldNotifyLocally === false) {
+        s.localOutbox.forEach((item) => {
+          if (s.localDedupe[item.id] === 0) delete s.localDedupe[item.id];
+        });
+        s.localOutbox = [];
+      }
+      if (value.intervalSeconds !== undefined)
+        for (const p of Object.values(s.progress))
+          p.nextAt = this.now() + s.settings.intervalSeconds * 1000;
     });
     this.wake(false);
     return this.snapshot();
@@ -236,6 +267,45 @@ export class Engine {
   }
   private prune(s: State) {
     const now = this.now();
+    s.localOutbox = s.localOutbox.filter((item) => {
+      const isValid =
+        s.settings.shouldNotifyLocally &&
+        item.ruleRefs.some((ref) =>
+          s.rules.some(
+            (r) => r.id === ref.id && r.revision === ref.revision && isRuleEligible(r, now),
+          ),
+        );
+      const isExpired = now - item.createdAt >= MAX_AGE;
+      if (!isValid || isExpired) {
+        if (s.localDedupe[item.id] === 0) delete s.localDedupe[item.id];
+        if (isExpired)
+          this.history(s, {
+            id: randomUUID(),
+            at: now,
+            kind: 'expired',
+            title: item.session.movieTitle,
+            detail: '앱 알림: 24시간 보존 기간이 지나 대기를 종료했습니다.',
+          });
+        return false;
+      }
+      return true;
+    });
+    while (s.localOutbox.length > 100) {
+      const item = s.localOutbox.shift()!;
+      if (s.localDedupe[item.id] === 0) delete s.localDedupe[item.id];
+      this.history(s, {
+        id: randomUUID(),
+        at: now,
+        kind: 'overflow',
+        title: item.session.movieTitle,
+        detail: '앱 알림: 대기 한도 100개를 초과해 가장 오래된 항목을 종료했습니다.',
+      });
+    }
+    s.localDedupe = Object.fromEntries(
+      Object.entries(s.localDedupe)
+        .filter(([, at]) => at === 0 || now - at < 30 * MAX_AGE)
+        .slice(-5000),
+    );
     s.outbox = s.outbox.filter((item) => {
       const isStale =
         item.secretRevision !== s.secret.revision ||
@@ -300,8 +370,7 @@ export class Engine {
         if (!isCurrent()) return;
         const progress = this.store.state.progress[rule.id];
         if (
-          !rule.isEnabled ||
-          rule.date < koreanToday(this.now()) ||
+          !isRuleEligible(rule, this.now()) ||
           (progress &&
             ((progress.retryUntil ?? 0) > this.now() || (!force && progress.nextAt > this.now())))
         )
@@ -324,26 +393,33 @@ export class Engine {
             if (previous?.baseline && previous.revision === rule.revision)
               for (const session of sessions) {
                 const id = sessionIdentity(session);
-                if (
-                  !session.isBookable ||
-                  previous.baseline[id] === true ||
-                  Object.hasOwn(s.dedupe, id) ||
-                  s.outbox.some((item) => item.id === id)
-                )
-                  continue;
-                if (!s.secret.encrypted) continue;
-                s.dedupe[id] = 0;
-                s.outbox.push({
+                if (!session.isBookable || previous.baseline[id] === true) continue;
+                const common = {
                   id,
                   session,
                   ruleRefs: s.rules
-                    .filter((r) => r.isEnabled && eligibleSessions(r, [session]).length)
+                    .filter((r) => isRuleEligible(r, now) && eligibleSessions(r, [session]).length)
                     .map((r) => ({ id: r.id, revision: r.revision })),
-                  secretRevision: s.secret.revision,
                   createdAt: now,
                   nextAt: now,
                   attempts: 0,
-                });
+                };
+                if (
+                  s.settings.shouldNotifyLocally &&
+                  !Object.hasOwn(s.localDedupe, id) &&
+                  !s.localOutbox.some((q) => q.id === id)
+                ) {
+                  s.localDedupe[id] = 0;
+                  s.localOutbox.push(common);
+                }
+                if (
+                  s.secret.encrypted &&
+                  !Object.hasOwn(s.dedupe, id) &&
+                  !s.outbox.some((q) => q.id === id)
+                ) {
+                  s.dedupe[id] = 0;
+                  s.outbox.push({ ...common, secretRevision: s.secret.revision });
+                }
               }
             const exactMovieIds = new Set(sessions.map((item) => item.movieId));
             if (!rule.movieId && exactMovieIds.size === 1) {
@@ -391,6 +467,66 @@ export class Engine {
         this.emit();
       }
       if (!isCurrent()) return;
+      for (let attempt = 0; attempt < 10 && isCurrent(); attempt++) {
+        const item = this.store.state.localOutbox.find((q) => q.nextAt <= this.now());
+        if (!item || !this.store.state.settings.shouldNotifyLocally) break;
+        const localRevision = this.localRevision;
+        const localController = new AbortController();
+        this.localController = localController;
+        await this.store.mutate(
+          (s) => {
+            if (!isCurrent() || localController.signal.aborted || !s.settings.shouldNotifyLocally)
+              return;
+            s.localOutbox = s.localOutbox.filter((q) => q.id !== item.id);
+            // Persist before showing: a crash here can lose one popup, but never replay it.
+            s.localDedupe[item.id] = this.now();
+          },
+          () => isCurrent() && !localController.signal.aborted,
+        );
+        if (!isCurrent() || localController.signal.aborted) return;
+        let result: LocalAlertResult;
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+        try {
+          result = await Promise.race([
+            this.dependencies.notifyLocal?.(item.session, localController.signal) ??
+              Promise.resolve<LocalAlertResult>({ kind: 'unsupported' }),
+            new Promise<LocalAlertResult>((resolve) => {
+              timeout = setTimeout(() => {
+                localController.abort();
+                resolve({ kind: 'failed', detail: '앱 알림 표시 시간이 초과되었습니다.' });
+              }, 2000);
+            }),
+          ]);
+        } catch {
+          result = { kind: 'failed' };
+        } finally {
+          clearTimeout(timeout);
+          this.localController = undefined;
+        }
+        if (!isCurrent()) return;
+        if (!this.store.state.settings.shouldNotifyLocally || localRevision !== this.localRevision)
+          continue;
+        this.localAlertWarning =
+          result.kind === 'requested'
+            ? undefined
+            : result.kind === 'unsupported'
+              ? '앱 팝업을 사용할 수 없어요. Discord 연결을 확인하세요.'
+              : '앱 팝업을 표시하지 못했어요. Discord 전송은 계속합니다.';
+        await this.store.mutate((s) => {
+          if (!isCurrent() || !s.settings.shouldNotifyLocally) return;
+          this.history(s, {
+            id: randomUUID(),
+            at: this.now(),
+            kind: result.kind === 'requested' ? 'localRequested' : 'localFailed',
+            title: item.session.movieTitle,
+            detail:
+              result.kind === 'requested'
+                ? `앱 알림 표시 요청 · ${item.session.theaterName} · ${item.session.date} ${item.session.time} · ${item.session.format}`
+                : this.localAlertWarning!,
+          });
+        }, isCurrent);
+      }
+      if (!isCurrent()) return;
       const state = this.store.state;
       if (
         !state.secret.encrypted ||
@@ -400,7 +536,7 @@ export class Engine {
       )
         return;
       const item = state.outbox.find((q) => q.nextAt <= this.now());
-      if (!item) return;
+      if (!item || state.localOutbox.some((q) => q.id === item.id)) return;
       let url: string;
       try {
         url = this.secrets.decode(state.secret.encrypted);
@@ -410,7 +546,10 @@ export class Engine {
         }, isCurrent);
         return;
       }
-      const result = await this.dependencies.deliver(url, item.session, controller.signal);
+      const discordController = new AbortController();
+      this.discordController = discordController;
+      const result = await this.dependencies.deliver(url, item.session, discordController.signal);
+      this.discordController = undefined;
       if (!isCurrent()) return;
       await this.store.mutate((s) => {
         if (!isCurrent() || s.secret.revision !== item.secretRevision) return;
@@ -474,10 +613,11 @@ export class Engine {
     if (!this.canRun()) return undefined;
     const s = this.store.state;
     const times = s.rules
-      .filter((r) => r.isEnabled && r.date >= koreanToday(this.now()))
+      .filter((r) => isRuleEligible(r, this.now()))
       .map((r) =>
         Math.max(s.progress[r.id]?.nextAt ?? this.now(), s.progress[r.id]?.retryUntil ?? 0),
       );
+    if (s.settings.shouldNotifyLocally) times.push(...s.localOutbox.map((q) => q.nextAt));
     if (s.secret.encrypted && !s.secret.isTerminal && this.secrets.isAvailable())
       times.push(...s.outbox.map((q) => Math.max(q.nextAt, s.secret.retryAt ?? 0)));
     return times.length ? Math.min(...times) : undefined;

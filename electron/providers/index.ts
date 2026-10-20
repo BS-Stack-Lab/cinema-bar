@@ -35,18 +35,19 @@ function decode(value: unknown) {
     .replace(/&nbsp;/gu, ' ');
 }
 function date(value: unknown) {
-  const str = field(value, 20).slice(0, 10);
+  const str = field(value, 20);
+  if (str !== String(value) || !/^(?:\d{8}|\d{4}-\d{2}-\d{2})$/u.test(str))
+    throw new ProviderError('공급자 상영 날짜를 해석할 수 없습니다.');
   return validDate(
     /^\d{8}$/u.test(str) ? `${str.slice(0, 4)}-${str.slice(4, 6)}-${str.slice(6, 8)}` : str,
   );
 }
 function time(value: unknown) {
-  const str = field(value, 10).replace(':', '');
-  if (
-    !/^\d{4}(?:\d{2})?$/u.test(str) ||
-    Number(str.slice(0, 2)) > 29 ||
-    Number(str.slice(2, 4)) > 59
-  )
+  const source = field(value, 10);
+  if (source !== String(value) || !/^(?:\d{4}|\d{2}:\d{2}|\d{4}00)$/u.test(source))
+    throw new ProviderError('공급자 상영 시각을 해석할 수 없습니다.');
+  const str = source.replace(':', '');
+  if (Number(str.slice(0, 2)) > 29 || Number(str.slice(2, 4)) > 59)
     throw new ProviderError('공급자 상영 시각을 해석할 수 없습니다.');
   return `${str.slice(0, 2)}:${str.slice(2, 4)}`;
 }
@@ -63,41 +64,56 @@ export function normalizeFormat(...values: unknown[]): Session['format'] {
     .filter((v) => typeof v === 'string')
     .join(' ')
     .toUpperCase();
-  if (/IMAX/u.test(value)) return 'IMAX';
+  if (/IMAX|아이맥스/u.test(value)) return 'IMAX';
   if (/4DX/u.test(value)) return '4DX';
-  if (/DOLBY|돌비/u.test(value)) return 'DOLBY';
   if (/SCREEN\s?X/u.test(value)) return 'SCREENX';
+  if (/DOLBY|돌비/u.test(value)) return 'DOLBY';
   if (/(?:^|[^\d])3D/u.test(value)) return '3D';
   if (/(?:^|[^\d])2D|디지털\s?2D/u.test(value)) return '2D';
   return 'UNKNOWN';
 }
 function route(provider: Provider) {
   return {
-    cgv: 'https://www.cgv.co.kr/cnm/booking',
+    cgv: 'https://cgv.co.kr/cnm/movieBook/movie',
     megabox: 'https://www.megabox.co.kr/booking',
     lottecinema: 'https://www.lottecinema.co.kr/NLCHS/Ticketing',
   }[provider];
 }
-export function parseCgv(payload: unknown): Session[] {
-  const body = object(payload);
-  if (body.statusCode !== 0 && body.statusCode !== 200)
-    throw new ProviderError('CGV 응답 상태를 확인할 수 없습니다.');
-  return rows(body.data).map((r) => ({
-    provider: 'cgv',
-    showingId: r.scnSseq
-      ? `${date(r.scnYmd)}-${field(r.siteNo, 24)}-${field(r.scnSseq, 80)}`
-      : undefined,
-    theaterId: field(r.siteNo, 24),
-    theaterName: decode(r.siteNm),
-    movieId: field(r.movNo, 80),
-    movieTitle: decode(r.movNm ?? r.prodNm),
-    date: date(r.scnYmd),
-    time: time(r.scnsrtTm),
-    screen: field(r.scnsNm ?? r.scnsNo ?? '미제공', 80),
-    format: normalizeFormat(r.scnFmtNm, r.movFmtNm, r.scnTypNm),
-    isBookable: available(r.frSeatCnt ?? r.frtmpSeatCnt) && r.sellYn !== 'N',
-    bookingUrl: route('cgv'),
-  }));
+export function parseCgv(payload: unknown, now = Date.now()): Session[] {
+  try {
+    const body = object(payload);
+    if (body.statusCode !== 0 && body.statusCode !== 200)
+      throw new ProviderError('CGV 응답 상태를 확인할 수 없습니다.');
+    return rows(body.data).map((r) => {
+      const businessDate = date(r.scnYmd);
+      const startTime = time(r.scnsrtTm);
+      const start =
+        Date.parse(`${businessDate}T00:00:00+09:00`) +
+        (Number(startTime.slice(0, 2)) * 60 + Number(startTime.slice(3))) * 60000;
+      return {
+        provider: 'cgv',
+        showingId: [
+          field(r.siteNo, 24),
+          businessDate,
+          field(r.scnsNo, 80),
+          field(r.scnSseq, 80),
+        ].join('-'),
+        theaterId: field(r.siteNo, 24),
+        theaterName: decode(r.siteNm),
+        movieId: field(r.movNo, 80),
+        movieTitle: decode(r.movNm),
+        date: businessDate,
+        time: startTime,
+        screen: field(r.scnsNm, 80),
+        format: normalizeFormat(r.movkndDsplNm, r.tcscnsGradNm, r.sascnsGradNm),
+        isBookable: available(r.frSeatCnt) && r.cntlYn === 'N' && start > now,
+        bookingUrl: route('cgv'),
+      };
+    });
+  } catch (error) {
+    if (error instanceof ProviderError) throw error;
+    throw new ProviderError('CGV 상영 응답 형식이 변경되었습니다.');
+  }
 }
 export function parseMegabox(payload: unknown): Session[] {
   const body = object(payload);
@@ -143,12 +159,21 @@ export function parseLotte(
     bookingUrl: route('lottecinema'),
   }));
 }
-export function createProviders(fetcher: Fetcher = fetch): Record<Provider, ProviderAdapter> {
-  async function request(url: string, signal: AbortSignal, init: RequestInit = {}) {
+export function createProviders(
+  fetcher: Fetcher = fetch,
+  cgvFetcher: Fetcher = fetcher,
+  now: () => number = Date.now,
+): Record<Provider, ProviderAdapter> {
+  async function request(
+    url: string,
+    signal: AbortSignal,
+    init: RequestInit = {},
+    transport = fetcher,
+  ) {
     const timeout = AbortSignal.timeout(15000);
     let response: Response;
     try {
-      response = await fetcher(url, {
+      response = await transport(url, {
         ...init,
         signal: AbortSignal.any([signal, timeout]),
         redirect: 'error',
@@ -195,9 +220,21 @@ export function createProviders(fetcher: Fetcher = fetch): Record<Provider, Prov
         rtctlScopCd: '08',
       });
       return parseCgv(
-        await request(`https://api.cgv.co.kr/cnm/atkt/searchMovScnInfo?${query}`, signal, {
-          headers: { Accept: 'application/json', Origin: 'https://www.cgv.co.kr' },
-        }),
+        await request(
+          `https://cgv.co.kr/api/v1/booking/searchMovScnInfo?${query}`,
+          signal,
+          {
+            headers: {
+              Accept: 'application/json',
+              'Accept-Language': 'ko-KR',
+              Referer: 'https://cgv.co.kr/cnm/movieBook/movie',
+            },
+            credentials: 'omit',
+            cache: 'no-store',
+          },
+          cgvFetcher,
+        ),
+        now(),
       );
     },
     megabox: async (rule, signal) => {

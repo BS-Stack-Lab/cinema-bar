@@ -82,8 +82,12 @@ export function validateRule(value: unknown, allowPast = false): RuleInput {
 }
 export function validateSettings(value: unknown) {
   const v = object(value);
-  exact(v, ['intervalSeconds', 'shouldStartAtLogin']);
-  const result: { intervalSeconds?: number; shouldStartAtLogin?: boolean } = {};
+  exact(v, ['intervalSeconds', 'shouldStartAtLogin', 'shouldNotifyLocally']);
+  const result: {
+    intervalSeconds?: number;
+    shouldStartAtLogin?: boolean;
+    shouldNotifyLocally?: boolean;
+  } = {};
   if (v.intervalSeconds !== undefined) {
     if (
       !Number.isInteger(v.intervalSeconds) ||
@@ -94,6 +98,7 @@ export function validateSettings(value: unknown) {
     result.intervalSeconds = v.intervalSeconds as number;
   }
   if (v.shouldStartAtLogin !== undefined) result.shouldStartAtLogin = flag(v.shouldStartAtLogin);
+  if (v.shouldNotifyLocally !== undefined) result.shouldNotifyLocally = flag(v.shouldNotifyLocally);
   return result;
 }
 export function validateWebhook(value: unknown) {
@@ -125,7 +130,7 @@ export function bookingUrl(provider: Provider, value: unknown): string {
     const allowed: Record<Provider, [string[], RegExp]> = {
       cgv: [
         ['cgv.co.kr', 'www.cgv.co.kr', 'cgv.co.kr', 'm.cgv.co.kr'],
-        /^\/(?:cnm\/booking|ticket|reserve)(?:\/|\?|$)/u,
+        /^\/(?:cnm\/movieBook\/movie$|cnm\/booking(?:\/|$)|ticket(?:\/|$)|reserve(?:\/|$))/u,
       ],
       megabox: [['www.megabox.co.kr'], /^\/booking(?:$|\/)/u],
       lottecinema: [['www.lottecinema.co.kr'], /^\/NLCHS\/Ticketing(?:$|\/)/u],
@@ -185,11 +190,11 @@ function validateSession(value: unknown): asserts value is Session {
   )
     throw new Error('저장 예매 주소 오류');
 }
-export function validateState(value: unknown): State {
+export function validateState(value: unknown, legacy = false): State {
   const s = object(value);
-  if (s.schemaVersion !== 1)
+  if (s.schemaVersion !== (legacy ? 1 : 2))
     throw new Error(
-      typeof s.schemaVersion === 'number' && s.schemaVersion > 1
+      typeof s.schemaVersion === 'number' && s.schemaVersion > 2
         ? '새 버전 저장 형식입니다. 앱을 업데이트하세요.'
         : '저장 형식이 손상되었습니다.',
     );
@@ -202,6 +207,13 @@ export function validateState(value: unknown): State {
     s.history.length > 100
   )
     throw new Error('저장 목록이 손상되었습니다.');
+  if (
+    legacy &&
+    (Object.hasOwn(s, 'localOutbox') ||
+      Object.hasOwn(s, 'localDedupe') ||
+      Object.hasOwn(object(s.settings), 'shouldNotifyLocally'))
+  )
+    throw new Error('기존 저장 형식에 지원하지 않는 앱 알림 필드가 있습니다.');
   const ids = new Set();
   for (const rule of s.rules) {
     const r = object(rule);
@@ -220,6 +232,9 @@ export function validateState(value: unknown): State {
   });
   flag(settings.isPaused);
   flag(settings.hasConfiguredLogin);
+  if (!Number.isInteger(settings.intervalSeconds) || settings.shouldStartAtLogin === undefined)
+    throw new Error('저장 설정 오류');
+  if (!legacy) flag(settings.shouldNotifyLocally);
   const secret = object(s.secret);
   number(secret.revision);
   flag(secret.isTerminal);
@@ -246,11 +261,14 @@ export function validateState(value: unknown): State {
       Object.values(baseline).forEach(flag);
     }
   }
-  for (const item of s.outbox) {
+  if (!legacy && (!Array.isArray(s.localOutbox) || s.localOutbox.length > 1000))
+    throw new Error('앱 알림 대기 오류');
+  for (const item of [...s.outbox, ...(legacy ? [] : (s.localOutbox as unknown[]))]) {
     const q = object(item);
     text(q.id, 1000);
     validateSession(q.session);
-    for (const key of ['secretRevision', 'createdAt', 'nextAt', 'attempts']) number(q[key]);
+    for (const key of ['createdAt', 'nextAt', 'attempts']) number(q[key]);
+    if ((s.outbox as unknown[]).includes(item)) number(q.secretRevision);
     if (!Array.isArray(q.ruleRefs) || q.ruleRefs.length > 100) throw new Error('대기 규칙 오류');
     for (const ref of q.ruleRefs) {
       const r = object(ref);
@@ -258,14 +276,24 @@ export function validateState(value: unknown): State {
       number(r.revision, 1);
     }
   }
-  const dedupe = object(s.dedupe);
-  if (Object.keys(dedupe).length > 10000) throw new Error('중복 기록 크기 오류');
-  Object.values(dedupe).forEach((v) => number(v));
+  for (const record of [s.dedupe, ...(legacy ? [] : [s.localDedupe])]) {
+    const dedupe = object(record);
+    if (Object.keys(dedupe).length > 10000) throw new Error('중복 기록 크기 오류');
+    Object.values(dedupe).forEach((v) => number(v));
+  }
   for (const item of s.history) {
     const h = object(item);
     text(h.id, 1000);
     number(h.at);
-    if (!['sent', 'failed', 'expired', 'overflow'].includes(String(h.kind)))
+    if (
+      ![
+        'sent',
+        'failed',
+        'expired',
+        'overflow',
+        ...(legacy ? [] : ['localRequested', 'localFailed', 'cancelled']),
+      ].includes(String(h.kind))
+    )
       throw new Error('이력 오류');
     text(h.title, 120);
     text(h.detail, 240);

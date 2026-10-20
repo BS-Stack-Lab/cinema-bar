@@ -32,7 +32,7 @@ try {
     });
     child.on('error', reject);
     timeout = setTimeout(() => {
-      child.kill('SIGTERM');
+      child.kill('SIGKILL');
     }, 45000);
     child.on('close', (code, signal) => resolve({ code, signal, diagnostics }));
   });

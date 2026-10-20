@@ -11,6 +11,7 @@ await build({
   external: ['electron'],
   target: 'node22',
 });
+for (const extension of ['png', 'icns', 'ico']) await readFile(`assets/appIcon.${extension}`);
 const staging = path.resolve('release/staging');
 await rm(staging, { recursive: true, force: true });
 await mkdir(staging, { recursive: true });
@@ -30,6 +31,7 @@ await writeFile(
 const outputs = await packager({
   dir: staging,
   name: 'Cinema Bar',
+  icon: path.resolve(process.platform === 'linux' ? 'assets/appIcon.png' : 'assets/appIcon'),
   appBundleId: 'local.cinemabar.desktop',
   out: 'release',
   overwrite: true,

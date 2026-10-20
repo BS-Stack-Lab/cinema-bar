@@ -13,10 +13,13 @@ const empty: Snapshot = {
     isPaused: false,
     shouldStartAtLogin: true,
     hasConfiguredLogin: true,
+    shouldNotifyLocally: true,
   },
   progress: {},
   history: [],
   pendingCount: 0,
+  localPendingCount: 0,
+  isLocalAlertSupported: true,
   hasWebhook: false,
   isWebhookBlocked: false,
   isEncryptionAvailable: true,
@@ -157,7 +160,7 @@ describe('QA accessible renderer', () => {
     expect(status({ ...current, settings: { ...current.settings, isPaused: true } }, rule)).toBe(
       '일시 정지',
     );
-    expect(status({ ...empty, rules: [rule], hasWebhook: false })).toBe('웹훅 연결 필요');
+    expect(status({ ...empty, rules: [rule], hasWebhook: false })).toBe('앱 알림 감시 중');
     expect(status({ ...empty, hasWebhook: true, isWebhookBlocked: true })).toBe('웹훅 오류');
     expect(status({ ...current, isChecking: true }, rule)).toBe('확인 중');
   });
@@ -178,5 +181,58 @@ describe('QA accessible renderer', () => {
     expect(screen.getByRole('button', { name: '긴 작품 39 수정' })).toBeTruthy();
     fireEvent.click(screen.getByRole('tab', { name: '알림 기록' }));
     expect(screen.getByText('웹훅을 교체하세요.')).toBeTruthy();
+  });
+});
+describe('local alert settings and factual status', () => {
+  it('allows webhook-free monitoring and persists a strict local toggle through the narrow settings API', async () => {
+    const snapshot = { ...empty, rules: [rule] };
+    const { api } = mount(snapshot);
+    await screen.findByRole('heading', { name: /Cinema Bar/ });
+    expect(screen.getByText('앱 알림 감시 중')).toBeTruthy();
+    fireEvent.click(screen.getByRole('tab', { name: '설정' }));
+    const toggle = screen.getByRole('checkbox', { name: '앱 알림' });
+    expect((toggle as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(toggle);
+    await waitFor(() =>
+      expect(api.updateSettings).toHaveBeenCalledWith({ shouldNotifyLocally: false }),
+    );
+    expect(screen.getByText(/OS 알림센터에는 남지 않아요/)).toBeTruthy();
+    expect(
+      status({ ...snapshot, settings: { ...snapshot.settings, shouldNotifyLocally: false } }),
+    ).toBe('알림 꺼짐');
+    expect(status({ ...snapshot, isLocalAlertSupported: false })).toBe('앱 알림 오류');
+  });
+  it('identifies local failures and Discord/local history as separate outcomes', async () => {
+    mount({
+      ...empty,
+      hasWebhook: true,
+      localAlertWarning: '앱 팝업을 표시하지 못했어요. Discord 전송은 계속합니다.',
+      history: [
+        { id: 'local', kind: 'localRequested', at: NOW, title: '영화', detail: '앱 표시 요청' },
+        { id: 'discord', kind: 'sent', at: NOW, title: '영화', detail: 'Discord 완료' },
+      ],
+    });
+    await screen.findByRole('heading', { name: /Cinema Bar/ });
+    expect(screen.getByText(/Discord 전송은 계속합니다/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('tab', { name: '알림 기록' }));
+    expect(screen.getByText('앱 알림 표시 요청')).toBeTruthy();
+    expect(screen.getByText('Discord 전송 완료')).toBeTruthy();
+  });
+  it.each([
+    ['2026-10-20T14:59:59Z', '01'],
+    ['2026-10-20T15:00:00Z', '01'],
+    ['2026-10-20T20:59:59Z', '01'],
+    ['2026-10-20T21:00:00Z', '00'],
+  ])('dashboard uses the same CGV business-date eligibility at %s', async (now, count) => {
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.parse(now));
+    try {
+      mount({ ...empty, rules: [{ ...rule, provider: 'cgv', date: '2026-10-20' }] });
+      await screen.findByRole('heading', { name: /Cinema Bar/ });
+      expect(
+        within(screen.getByRole('article', { name: '감시 상태 요약' })).getByText(count),
+      ).toBeTruthy();
+    } finally {
+      clock.mockRestore();
+    }
   });
 });

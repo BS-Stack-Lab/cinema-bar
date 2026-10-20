@@ -1,6 +1,7 @@
 import { status } from './status';
 import { useEffect, useState, type FormEvent } from 'react';
 import { FORMATS, type Provider, type RuleInput, type Snapshot } from '../electron/types';
+import { isRuleEligible } from '../electron/eligibility';
 import { koreanToday, validateRule } from '../electron/validation';
 const LABELS: Record<Provider, string> = {
   cgv: 'CGV',
@@ -78,7 +79,7 @@ export default function App() {
     snapshot.isSuspended ||
     snapshot.recoveryError
       ? 0
-      : snapshot.rules.filter((r) => r.isEnabled && r.date >= koreanToday()).length;
+      : snapshot.rules.filter((r) => isRuleEligible(r)).length;
   const latestSuccess = Math.max(
     0,
     ...Object.values(snapshot.progress).map((p) => p.lastSuccess ?? 0),
@@ -142,6 +143,11 @@ export default function App() {
           {snapshot.loginWarning}
         </div>
       )}
+      {snapshot.localAlertWarning && (
+        <div className="notice" role="status">
+          {snapshot.localAlertWarning}
+        </div>
+      )}
       {snapshot.recoveryError && (
         <div className="notice danger">
           <strong>저장 파일 확인이 필요해요</strong>
@@ -177,7 +183,7 @@ export default function App() {
                 </h2>
                 <p>
                   저장한 극장과 작품만 확인하고
-                  <br />새 예매가 열리면 Discord로 알려드려요.
+                  <br />새 예매가 열리면 앱 알림으로 먼저 알려드려요.
                 </p>
                 <span className="badge violet">로컬 감시</span>{' '}
                 <span className="badge muted">나만의 조건</span>
@@ -203,7 +209,7 @@ export default function App() {
               <article className="card stat">
                 <span>전송 대기</span>
                 <strong>
-                  {String(snapshot.pendingCount).padStart(2, '0')}
+                  {String(snapshot.pendingCount + snapshot.localPendingCount).padStart(2, '0')}
                   <small> 건</small>
                 </strong>
                 <p>
@@ -211,7 +217,7 @@ export default function App() {
                     ? snapshot.isWebhookBlocked
                       ? '웹훅 재연결 필요'
                       : 'Discord 연결됨'
-                    : '설정에서 Discord 연결'}
+                    : 'Discord는 선택 연결'}
                 </p>
               </article>
             </div>
@@ -371,7 +377,10 @@ export default function App() {
                       <span className={`badge ${item.kind === 'sent' ? 'green' : 'amber'}`}>
                         {
                           {
-                            sent: '전송 완료',
+                            sent: 'Discord 전송 완료',
+                            localRequested: '앱 알림 표시 요청',
+                            localFailed: '앱 알림 오류',
+                            cancelled: '이전 대기 종료',
                             failed: '전송 오류',
                             expired: '보존 만료',
                             overflow: '한도 초과',
@@ -386,7 +395,9 @@ export default function App() {
                 ))}
               </div>
             )}
-            <p className="hint">네트워크 응답이 불명확하면 같은 알림이 다시 도착할 수 있어요.</p>
+            <p className="hint">
+              앱 알림은 상영마다 한 번 시도해요. Discord 응답이 불명확하면 전송이 반복될 수 있어요.
+            </p>
           </>
         )}
         {tab === '설정' && (
@@ -394,6 +405,32 @@ export default function App() {
             <div className="sectionTitle">
               <h2>내 연결과 실행</h2>
               <span>이 기기에만 저장</span>
+            </div>
+            <div className="card settingsCard">
+              <label className="settingRow">
+                <span>
+                  <strong>앱 알림</strong>
+                  <small>웹훅 없이도 새 상영을 팝업으로 먼저 알려요</small>
+                </span>
+                <input
+                  type="checkbox"
+                  aria-label="앱 알림"
+                  checked={snapshot.settings.shouldNotifyLocally}
+                  onChange={(event) =>
+                    void action(() =>
+                      window.cinema.updateSettings({ shouldNotifyLocally: event.target.checked }),
+                    )
+                  }
+                />
+              </label>
+              <p className="hint">
+                앱 실행 중 화면에 표시하는 팝업이에요. OS 알림센터에는 남지 않아요.
+              </p>
+              {!snapshot.isLocalAlertSupported && (
+                <p className="errorText" role="status">
+                  앱 팝업을 사용할 수 없어요. Discord를 연결해 주세요.
+                </p>
+              )}
             </div>
             <form
               className="card settingsCard"
@@ -405,7 +442,9 @@ export default function App() {
               }}
             >
               <div className="sectionTitle">
-                <h3>Discord 연결</h3>
+                <h3>
+                  Discord 연결 <small>선택</small>
+                </h3>
                 <span
                   className={`badge ${snapshot.hasWebhook && !snapshot.isWebhookBlocked ? 'green' : 'amber'}`}
                 >
@@ -413,7 +452,7 @@ export default function App() {
                     ? '교체 필요'
                     : snapshot.hasWebhook
                       ? '연결됨'
-                      : '연결 필요'}
+                      : '선택 연결'}
                 </span>
               </div>
               <p>
@@ -510,8 +549,8 @@ export default function App() {
               </p>
               <code>{snapshot.storagePath}</code>
               <p className="hint">
-                CGV 공개 조회는 HTTP 403으로 제한될 수 있어요. 인증 우회 없이 공급자 오류로
-                표시합니다.
+                공개 시간표를 확인해요. 공급자 연결이 제한되면 오류를 표시하고 잠시 후 다시
+                시도해요.
               </p>
             </div>
           </>

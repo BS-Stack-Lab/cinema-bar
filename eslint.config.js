@@ -9,7 +9,7 @@ export default tseslint.config(
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    files: ['**/*.{js,mjs,ts,tsx}'],
+    files: ['**/*.{js,mjs,cjs,ts,tsx}'],
     languageOptions: { globals: { ...globals.browser, ...globals.node, ...globals.es2021 } },
     rules: { 'no-console': 'warn', '@typescript-eslint/no-unused-vars': 'error' },
   },

@@ -112,7 +112,7 @@ afterEach(async () => {
   );
 });
 describe('QA provider and predicate boundaries', () => {
-  it('all-provider-live-evidence: actual routes, strict fixture parsers and HTTP limits', async () => {
+  it('provider fixture contracts: current routes, strict parsers and HTTP limits', async () => {
     expect(parseMegabox(megabox)[0]).toMatchObject(session);
     expect(parseCgv(cgv)[0]).toMatchObject({ provider: 'cgv', format: 'IMAX', isBookable: true });
     expect(
@@ -146,7 +146,7 @@ describe('QA provider and predicate boundaries', () => {
     await adapters.megabox(rule, new AbortController().signal);
     await adapters.cgv(rule, new AbortController().signal);
     expect(calls[0]).toContain('/selectBokdList.do');
-    expect(calls[1]).toContain('/cnm/atkt/searchMovScnInfo?');
+    expect(calls[1]).toContain('/api/v1/booking/searchMovScnInfo?');
     const lotteFetch = vi
       .fn()
       .mockResolvedValueOnce(

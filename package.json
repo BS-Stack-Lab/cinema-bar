@@ -15,7 +15,10 @@
     "test:watch": "vitest",
     "build": "tsc --noEmit && npm run compile && vite build && node scripts/packageApp.mjs",
     "test:desktop": "node scripts/desktopSmoke.mjs",
-    "probe:providers": "npm run compile && node scripts/probeProviders.mjs"
+    "probe:providers": "npm run test:live",
+    "icons:generate": "node scripts/installRuntime.mjs && node scripts/generateIcons.mjs",
+    "icons:check": "node scripts/installRuntime.mjs && node scripts/checkIcons.mjs",
+    "test:live": "node scripts/installRuntime.mjs && npm run compile && node scripts/runLiveProbe.mjs"
   },
   "dependencies": {
     "react": "19.3.1",

@@ -7,8 +7,16 @@ export function status(snapshot: Snapshot, rule?: Rule) {
   if (snapshot.isChecking) return '확인 중';
   if (rule && snapshot.progress[rule.id]?.error) return '공급자 오류';
   if (snapshot.isWebhookBlocked) return '웹훅 오류';
-  if (!snapshot.hasWebhook) return '웹훅 연결 필요';
+  const hasLocal = snapshot.settings.shouldNotifyLocally && snapshot.isLocalAlertSupported;
+  if (!snapshot.hasWebhook && !hasLocal)
+    return snapshot.settings.shouldNotifyLocally ? '앱 알림 오류' : '알림 꺼짐';
+  if (snapshot.localAlertWarning)
+    return snapshot.hasWebhook ? '감시 중 · 앱 알림 오류' : '앱 알림 오류';
   if (!rule && snapshot.rules.some((r) => snapshot.progress[r.id]?.error)) return '공급자 오류';
   if (rule && !snapshot.progress[rule.id]?.lastSuccess) return '대기';
-  return snapshot.rules.length ? '감시 중' : '시작 준비';
+  return snapshot.rules.length
+    ? snapshot.hasWebhook
+      ? '감시 중'
+      : '앱 알림 감시 중'
+    : '시작 준비';
 }

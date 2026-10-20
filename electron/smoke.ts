@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import type { App, BrowserWindow, Tray, WebPreferences } from 'electron';
 import type { Engine } from './engine.js';
 import type { Store } from './store.js';
+import { PopupAlerts } from './notifications.js';
 import type { LoginSettings } from './lifecycle.js';
 import { koreanToday } from './validation.js';
 interface SmokeContext {
@@ -17,6 +18,7 @@ interface SmokeContext {
   login: LoginSettings;
   loginWrites: boolean[];
   securityPreferences: WebPreferences;
+  popups: PopupAlerts;
 }
 export async function runSmoke({
   app,
@@ -27,6 +29,7 @@ export async function runSmoke({
   login,
   loginWrites,
   securityPreferences,
+  popups,
 }: SmokeContext) {
   const output = process.env.CINEMA_SMOKE_OUTPUT!;
   const actions: { name: string; passed: boolean; detail?: unknown }[] = [];
@@ -169,6 +172,129 @@ export async function runSmoke({
         "document.querySelector('[role=tab][aria-selected=true]').textContent==='대시보드' && !!Array.from(document.querySelectorAll('button')).find(x=>x.textContent.includes('첫 감시 추가'))",
       ),
     );
+    const fixtureSession = {
+      provider: 'cgv' as const,
+      showingId: 'popup-fixture',
+      theaterId: '0013',
+      theaterName: 'CGV 용산아이파크몰',
+      movieId: 'fixture',
+      movieTitle:
+        '별의 영화 <img src="https://invalid.example/" onerror="globalThis.injected=true">',
+      date: koreanToday(),
+      time: '24:10',
+      screen: 'IMAX관',
+      format: 'IMAX' as const,
+      isBookable: true,
+      bookingUrl: 'https://cgv.co.kr/cnm/movieBook/movie',
+    };
+    const focusedBefore = window.isFocused();
+    const popupSignal = new AbortController();
+    const shown = await popups.notify(fixtureSession, popupSignal.signal);
+    check(
+      'owned-popup-actual-show',
+      shown.kind === 'requested' && popups.windows.length === 1 && popups.windows[0].isVisible(),
+    );
+    const popup = popups.windows[0];
+    const popupPreferences = popups.preferences;
+    check(
+      'popup-security-preferences',
+      popupPreferences.sandbox &&
+        popupPreferences.contextIsolation &&
+        !popupPreferences.nodeIntegration &&
+        !popupPreferences.preload &&
+        popupPreferences.devTools === false,
+    );
+    check('popup-no-focus-steal', focusedBefore && window.isFocused() && !popup.isFocused());
+    const popupDom = await popup.webContents.executeJavaScript(
+      `({ title: document.querySelector('h1').textContent, imageCount: document.querySelectorAll('img,script,iframe').length, injected: !!globalThis.injected, hasCapability: typeof require !== 'undefined' || typeof process !== 'undefined' || !!window.cinema, policy: document.querySelector('meta[http-equiv="Content-Security-Policy"]').content })`,
+    );
+    check(
+      'popup-escaped-no-capabilities',
+      popupDom.title === fixtureSession.movieTitle &&
+        popupDom.imageCount === 0 &&
+        !popupDom.injected &&
+        !popupDom.hasCapability &&
+        popupDom.policy.includes("connect-src 'none'"),
+    );
+    check(
+      'popup-window-open-denied',
+      await popup.webContents.executeJavaScript("window.open('https://invalid.example/') === null"),
+    );
+    const popupImage = await popup.webContents.capturePage();
+    await writeFile(path.join(output, 'popup.png'), popupImage.toPNG());
+    check('popup-real-capture', !popupImage.isEmpty());
+    for (let index = 0; index < 3; index++)
+      await popups.notify(
+        { ...fixtureSession, movieTitle: `상영 알림 ${index}` },
+        new AbortController().signal,
+      );
+    check('popup-limit-three', popups.windows.length <= 3 && popup.isDestroyed());
+    const area = (await import('electron')).screen.getPrimaryDisplay().workArea;
+    check(
+      'popup-within-work-area',
+      popups.windows.every((item) => {
+        const b = item.getBounds();
+        return (
+          b.x >= area.x &&
+          b.y >= area.y &&
+          b.x + b.width <= area.x + area.width &&
+          b.y + b.height <= area.y + area.height
+        );
+      }),
+    );
+    const oldCount = popups.windows.length;
+    popups.windows[0].close();
+    for (let i = 0; i < 50 && popups.windows.length === oldCount; i++)
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    check('popup-native-dismiss', popups.windows.length === oldCount - 1);
+    const aborted = new AbortController();
+    aborted.abort();
+    check(
+      'popup-pre-abort-no-window',
+      (await popups.notify(fixtureSession, aborted.signal)).kind === 'failed' &&
+        popups.windows.length === oldCount - 1,
+    );
+    const cancel = new AbortController();
+    await popups.notify(fixtureSession, cancel.signal);
+    const cancelledWindow = popups.windows.at(-1)!;
+    cancel.abort();
+    check('popup-cancel-closes-window', cancelledWindow.isDestroyed());
+    const failureStarted = Date.now();
+    const loading = popups.notify(fixtureSession, new AbortController().signal);
+    popups.windows.at(-1)!.destroy();
+    check(
+      'popup-load-failure-bounded',
+      (await loading).kind === 'failed' && Date.now() - failureStarted < 2000,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 8200));
+    check('popup-auto-close-eight-seconds', popups.windows.length === 0);
+    await popups.notify(
+      { ...fixtureSession, movieTitle: '종료 정리 검사' },
+      new AbortController().signal,
+    );
+    const quittingPopups = [...popups.windows];
+    popups.dispose();
+    check(
+      'popup-quit-cleanup',
+      quittingPopups.every((item) => item.isDestroyed()) && popups.windows.length === 0,
+    );
+    await writeFile(
+      path.join(output, 'popup-metadata.json'),
+      JSON.stringify(
+        {
+          observedAt: new Date().toISOString(),
+          focusedBefore,
+          mainStillFocused: window.isFocused(),
+          popupPreferences,
+          popupDom,
+          workArea: area,
+          realOsNotificationWrites: 0,
+          realDiscordSends: 0,
+        },
+        null,
+        2,
+      ),
+    );
     const image = await window.webContents.capturePage();
     await writeFile(path.join(output, 'desktop.png'), image.toPNG());
     check('capturePage-real-electron', !image.isEmpty(), image.getSize());
@@ -187,6 +313,7 @@ export async function runSmoke({
           mockProviders: true,
           mockDiscord: true,
           realDiscordSends: 0,
+          realOsNotificationWrites: 0,
           mockLoginWrites: loginWrites,
           realLoginWrites: 0,
           nativeLoginReadOnly: true,

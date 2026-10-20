@@ -19,6 +19,8 @@ import { Engine } from './engine.js';
 import { LoginSettings } from './lifecycle.js';
 import { createTrayIcon } from './trayIcon.js';
 import { createProviders } from './providers/index.js';
+import { createCgvTransport } from './cgvTransport.js';
+import { PopupAlerts } from './notifications.js';
 import { createDiscord } from './discord.js';
 import { validateIpc, validateSender } from './ipc.js';
 import type { Provider, RuleInput } from './types.js';
@@ -35,6 +37,7 @@ if (!hasLock) app.quit();
 let window: BrowserWindow;
 let tray: Tray;
 let engine: Engine;
+let popups: PopupAlerts;
 let isQuitting = false;
 let pageUrl = '';
 function toggleWindow() {
@@ -65,6 +68,7 @@ app.on('second-instance', () => {
 app.on('before-quit', () => {
   isQuitting = true;
   engine?.stop();
+  popups?.dispose();
 });
 app.on('window-all-closed', () => undefined);
 if (hasLock)
@@ -101,7 +105,8 @@ if (hasLock)
             },
         store,
       );
-      const providers = createProviders();
+      const providers = createProviders(fetch, createCgvTransport());
+      popups = new PopupAlerts();
       engine = new Engine(
         store,
         secrets,
@@ -113,8 +118,15 @@ if (hasLock)
                 lottecinema: async () => [],
               },
               deliver: async () => ({ kind: 'sent' }),
+              notifyLocal: async () => ({ kind: 'requested' }),
+              isLocalAlertSupported: popups.isSupported,
             }
-          : { providers, deliver: createDiscord() },
+          : {
+              providers,
+              deliver: createDiscord(),
+              notifyLocal: popups.notify,
+              isLocalAlertSupported: popups.isSupported,
+            },
       );
       try {
         await login.initialize();
@@ -206,7 +218,11 @@ if (hasLock)
             case 'deleteWebhook':
               return engine.deleteWebhook();
             case 'updateSettings': {
-              const settings = value as { intervalSeconds?: number; shouldStartAtLogin?: boolean };
+              const settings = value as {
+                intervalSeconds?: number;
+                shouldStartAtLogin?: boolean;
+                shouldNotifyLocally?: boolean;
+              };
               if (settings.shouldStartAtLogin !== undefined) {
                 await login.apply(settings.shouldStartAtLogin);
                 engine.loginWarning = undefined;
@@ -246,6 +262,7 @@ if (hasLock)
           login,
           loginWrites,
           securityPreferences,
+          popups,
         });
       } else toggleWindow();
     })

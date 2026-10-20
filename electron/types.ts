@@ -51,10 +51,12 @@ export interface OutboxItem {
   nextAt: number;
   attempts: number;
 }
+export type LocalOutboxItem = Omit<OutboxItem, 'secretRevision'>;
+export type LocalAlertResult = { kind: 'requested' | 'failed' | 'unsupported'; detail?: string };
 export interface HistoryItem {
   id: string;
   at: number;
-  kind: 'sent' | 'failed' | 'expired' | 'overflow';
+  kind: 'sent' | 'failed' | 'expired' | 'overflow' | 'localRequested' | 'localFailed' | 'cancelled';
   title: string;
   detail: string;
 }
@@ -63,15 +65,18 @@ export interface Settings {
   isPaused: boolean;
   shouldStartAtLogin: boolean;
   hasConfiguredLogin: boolean;
+  shouldNotifyLocally: boolean;
 }
 export interface State {
-  schemaVersion: 1;
+  schemaVersion: 2;
   rules: Rule[];
   settings: Settings;
   progress: Record<string, RuleProgress>;
   secret: { encrypted?: string; revision: number; isTerminal: boolean; retryAt?: number };
   outbox: OutboxItem[];
   dedupe: Record<string, number>;
+  localOutbox: LocalOutboxItem[];
+  localDedupe: Record<string, number>;
   history: HistoryItem[];
 }
 export interface Snapshot {
@@ -80,6 +85,9 @@ export interface Snapshot {
   progress: Record<string, Omit<RuleProgress, 'baseline'>>;
   history: HistoryItem[];
   pendingCount: number;
+  localPendingCount: number;
+  isLocalAlertSupported: boolean;
+  localAlertWarning?: string;
   hasWebhook: boolean;
   isWebhookBlocked: boolean;
   isEncryptionAvailable: boolean;
@@ -101,6 +109,7 @@ export interface CinemaApi {
   updateSettings(input: {
     intervalSeconds?: number;
     shouldStartAtLogin?: boolean;
+    shouldNotifyLocally?: boolean;
   }): Promise<Snapshot>;
   refresh(): Promise<Snapshot>;
   openBooking(input: { provider: Provider; url: string }): Promise<void>;

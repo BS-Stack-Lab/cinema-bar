@@ -2,17 +2,23 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import assert from 'node:assert/strict';
-import type { App, BrowserWindow, Tray, WebPreferences } from 'electron';
+import type { App, BrowserWindow, Tray, WebPreferences, Rectangle } from 'electron';
 import type { Engine } from './engine.js';
 import type { Store } from './store.js';
 import { PopupAlerts } from './notifications.js';
 import type { LoginSettings } from './lifecycle.js';
+import type { Fetcher } from './providers/index.js';
+import { createTrayIcon } from './trayIcon.js';
 import { koreanToday } from './validation.js';
 interface SmokeContext {
   app: App;
   window: BrowserWindow;
   tray: Tray;
   toggleWindow(): void;
+  showWindow(bounds?: Rectangle): void;
+  sampleTray(): void;
+  traySamples: unknown[];
+  calculateWindowBounds(area: Rectangle, anchor?: Rectangle): Rectangle;
   engine: Engine;
   store: Store;
   login: LoginSettings;
@@ -24,6 +30,11 @@ export async function runSmoke({
   app,
   window,
   toggleWindow,
+  showWindow,
+  sampleTray,
+  traySamples,
+  calculateWindowBounds,
+  tray,
   engine,
   store,
   login,
@@ -60,7 +71,7 @@ export async function runSmoke({
     check(
       'renderer-narrow-api',
       await ui(
-        'typeof require === "undefined" && typeof process === "undefined" && !window.cinema.invoke && !window.cinema.ipcRenderer && Object.keys(window.cinema).length===12',
+        'typeof require === "undefined" && typeof process === "undefined" && !window.cinema.invoke && !window.cinema.ipcRenderer && Object.keys(window.cinema).length===14',
       ),
     );
     window.webContents.debugger.attach('1.3');
@@ -91,15 +102,40 @@ export async function runSmoke({
     await ui(
       "Array.from(document.querySelectorAll('button')).find(x=>x.textContent.includes('＋ 추가')).click()",
     );
-    await waitFor('!!document.querySelector(\'input[aria-label="극장 ID"]\')');
-    await ui(
-      `(() => { const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set; for(const [name,value] of Object.entries({'극장 ID':'1372','극장 이름':'스모크 극장','작품 제목':'스모크 영화','상영일':${JSON.stringify(koreanToday())}})){const input=document.querySelector('input[aria-label="'+name+'"]'); setter.call(input,value); input.dispatchEvent(new Event('input',{bubbles:true}));} })()`,
+    await waitFor('!!document.querySelector(\'select[aria-label="지역"] option[value="01"]\')');
+    check(
+      'catalog-no-manual-theater-inputs',
+      await ui(
+        '!document.querySelector(\'input[aria-label="극장 ID"], input[aria-label="극장 이름"]\')',
+      ),
+    );
+    for (const [name, value] of [
+      ['지역', '01'],
+      ['극장', '0013'],
+      ['작품 검색 결과', '30001367'],
+    ]) {
+      await ui(
+        `(() => { const select=document.querySelector('select[aria-label="${name}"]'); const setter=Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set; setter.call(select,${JSON.stringify(value)}); select.dispatchEvent(new Event('change',{bubbles:true})); })()`,
+      );
+    }
+    await waitFor('!document.querySelector(\'button[type="submit"]\').disabled');
+    await writeFile(
+      path.join(output, 'catalog-form.png'),
+      (await window.webContents.capturePage()).toPNG(),
     );
     await ui("document.querySelector('form').requestSubmit()");
-    await waitFor('!document.querySelector(\'input[aria-label="극장 ID"]\')');
+    await waitFor('!document.querySelector(\'select[aria-label="지역"]\')');
     check(
       'ui-rule-form-save',
-      store.state.rules.length === 1 && store.state.rules[0].movieTitle === '스모크 영화',
+      store.state.rules.length === 1 &&
+        store.state.rules[0].movieId === '30001367' &&
+        store.state.rules[0].theaterId === '0013',
+    );
+    check(
+      'catalog-input-rejection',
+      await ui(
+        `(async()=>{try{await window.cinema.getCatalog({provider:'cgv',requestId:'smoke',url:'https://example.com'});return false}catch{return true}})()`,
+      ),
     );
     const invalid = await ui<boolean>(
       `(async()=>{try{await window.cinema.saveRule({provider:'cgv'});return false}catch{return true}})()`,
@@ -141,7 +177,37 @@ export async function runSmoke({
     check('tray-toggle-show', window.isVisible());
     window.close();
     check('close-hides-process-survives', !window.isDestroyed() && !window.isVisible());
-    window.show();
+    app.emit('activate', {}, false);
+    check('dock-activate-reopens-focus', window.isVisible() && window.isFocused());
+    showWindow({ x: 0, y: 0, width: 0, height: 0 });
+    const electronScreen = (await import('electron')).screen;
+    const cursorArea = electronScreen.getDisplayNearestPoint(
+      electronScreen.getCursorScreenPoint(),
+    ).workArea;
+    const fallback = window.getBounds();
+    check(
+      'invalid-tray-cursor-safe-placement',
+      fallback.x >= cursorArea.x &&
+        fallback.y >= cursorArea.y &&
+        fallback.x + fallback.width <= cursorArea.x + cursorArea.width &&
+        fallback.y + fallback.height <= cursorArea.y + cursorArea.height,
+      { fallback, cursorArea },
+    );
+    for (const area of [
+      { x: -900, y: -314, width: 800, height: 500 },
+      { x: -320, y: -400, width: 320, height: 180 },
+    ]) {
+      const placed = calculateWindowBounds(area);
+      check(
+        `small-work-area-${area.width}`,
+        placed.x >= area.x &&
+          placed.y >= area.y &&
+          placed.x + placed.width <= area.x + area.width &&
+          placed.y + placed.height <= area.y + area.height,
+        { area, placed },
+      );
+    }
+    window.hide();
     const second = await new Promise<number | null>((resolve) => {
       const child = spawn(
         process.execPath,
@@ -154,6 +220,35 @@ export async function runSmoke({
       child.on('exit', resolve);
     });
     check('single-instance-second-exits', second === 0);
+    check('second-instance-reopens-window', window.isVisible());
+    const icon = createTrayIcon();
+    const bitmap = icon.toBitmap();
+    const alphaPixels = [...bitmap].filter((value, index) => index % 4 === 3 && value > 0).length;
+    check(
+      'tray-valid-template-bitmap',
+      !icon.isEmpty() && icon.isTemplateImage() && alphaPixels > 0,
+      { size: icon.getSize(), alphaPixels },
+    );
+    check('dock-visible', process.platform !== 'darwin' || app.dock?.isVisible());
+    check('tray-CB-identity', process.platform !== 'darwin' || tray.getTitle() === 'CB');
+    sampleTray();
+    await writeFile(
+      path.join(output, 'tray-diagnostics.json'),
+      JSON.stringify(
+        {
+          samples: traySamples,
+          dockVisible: app.dock?.isVisible(),
+          actualMenuBarVisibility: 'unconfirmed',
+          trayWarning: engine.snapshot().trayWarning,
+        },
+        null,
+        2,
+      ),
+    );
+    check(
+      'tray-visibility-warning-factual',
+      process.platform !== 'darwin' || !!engine.snapshot().trayWarning,
+    );
     await engine.deleteRule(store.state.rules[0].id);
     await engine.setPaused(false);
     await ui(
@@ -340,3 +435,31 @@ export async function runSmoke({
     app.exit(1);
   }
 }
+
+export const smokeCatalogFetch: Fetcher = async (url) => {
+  if (url.includes('searchRegnList'))
+    return Response.json({
+      statusCode: 0,
+      data: [
+        {
+          regnGrpCd: '01',
+          regnGrpNm: '서울',
+          siteList: [{ siteNo: '0013', siteNm: '용산아이파크몰' }],
+        },
+        {
+          regnGrpCd: '02',
+          regnGrpNm: '경기',
+          siteList: [{ siteNo: '0056', siteNm: '스모크 경기' }],
+        },
+      ],
+    });
+  if (url.includes('searchAtktTopPostrList'))
+    return Response.json({
+      statusCode: 0,
+      data: [
+        { movNo: '30001367', movNm: '극장판 치이카와-인어 섬의 비밀' },
+        { movNo: '30001450', movNm: '실낙원' },
+      ],
+    });
+  throw new Error('Unexpected smoke catalog endpoint');
+};

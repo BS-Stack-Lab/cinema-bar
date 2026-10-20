@@ -22,8 +22,9 @@ import { createProviders } from './providers/index.js';
 import { createCgvTransport } from './cgvTransport.js';
 import { PopupAlerts } from './notifications.js';
 import { createDiscord } from './discord.js';
+import { CatalogService } from './catalog.js';
 import { validateIpc, validateSender } from './ipc.js';
-import type { Provider, RuleInput } from './types.js';
+import type { CatalogRequest, Provider, RuleInput } from './types.js';
 const directory = path.dirname(fileURLToPath(import.meta.url));
 const isSmoke = process.env.CINEMA_SMOKE === '1' && process.argv.includes('--cinema-smoke');
 if (isSmoke) {
@@ -38,44 +39,86 @@ let window: BrowserWindow;
 let tray: Tray;
 let engine: Engine;
 let popups: PopupAlerts;
+let catalog: CatalogService;
+const traySamples: unknown[] = [];
 let isQuitting = false;
 let pageUrl = '';
-function toggleWindow() {
-  if (window.isVisible()) window.hide();
-  else {
-    const trayBounds = tray.getBounds();
-    const bounds = screen.getDisplayMatching(trayBounds).workArea;
-    const size = window.getBounds();
-    window.setPosition(
-      Math.max(
-        bounds.x,
-        Math.min(trayBounds.x - size.width / 2, bounds.x + bounds.width - size.width),
-      ),
-      process.platform === 'darwin'
-        ? bounds.y + 8
-        : Math.max(bounds.y, bounds.y + bounds.height - size.height - 8),
-    );
-    window.show();
-    window.focus();
-  }
+function trayAtMenuBar(bounds: Electron.Rectangle) {
+  return (
+    bounds.width > 0 &&
+    bounds.height > 0 &&
+    screen.getAllDisplays().some((display) => {
+      const topHeight = Math.max(24, display.workArea.y - display.bounds.y);
+      return (
+        bounds.x < display.bounds.x + display.bounds.width &&
+        bounds.x + bounds.width > display.bounds.x &&
+        bounds.y < display.bounds.y + topHeight &&
+        bounds.y + bounds.height > display.bounds.y
+      );
+    })
+  );
 }
-app.on('second-instance', () => {
-  if (window) {
-    window.show();
-    window.focus();
-  }
-});
+function calculateWindowBounds(area: Electron.Rectangle, anchor?: Electron.Rectangle) {
+  const width = Math.min(440, area.width);
+  const height = Math.min(740, Math.max(1, area.height - 24));
+  const x = anchor ? anchor.x - width / 2 : area.x + (area.width - width) / 2;
+  const y =
+    anchor && process.platform !== 'darwin' ? area.y + area.height - height - 8 : area.y + 8;
+  return {
+    x: Math.round(Math.max(area.x, Math.min(x, area.x + area.width - width))),
+    y: Math.round(Math.max(area.y, Math.min(y, area.y + area.height - height))),
+    width,
+    height,
+  };
+}
+function showWindow(trayBounds = tray?.getBounds()) {
+  if (!window || window.isDestroyed()) return;
+  sampleTray();
+  const hasAnchor = trayBounds && trayAtMenuBar(trayBounds);
+  const display = hasAnchor
+    ? screen.getDisplayMatching(trayBounds)
+    : screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  const area = display.workArea;
+  window.setMinimumSize(Math.min(340, area.width), 0);
+  window.setBounds(calculateWindowBounds(area, hasAnchor ? trayBounds : undefined));
+  window.show();
+  window.focus();
+}
+function toggleWindow() {
+  if (!window || window.isDestroyed()) return;
+  if (window.isVisible()) window.hide();
+  else showWindow();
+}
+function sampleTray() {
+  if (!tray || tray.isDestroyed()) return;
+  const bounds = tray.getBounds();
+  traySamples.push({
+    at: Date.now(),
+    bounds,
+    intersectsMenuBar: trayAtMenuBar(bounds),
+    displays: screen
+      .getAllDisplays()
+      .map(({ id, bounds, workArea, scaleFactor }) => ({ id, bounds, workArea, scaleFactor })),
+  });
+  if (traySamples.length > 8) traySamples.shift();
+}
+app.on('activate', () => showWindow());
+app.on('second-instance', () => showWindow());
 app.on('before-quit', () => {
   isQuitting = true;
   engine?.stop();
   popups?.dispose();
+  catalog?.dispose();
 });
 app.on('window-all-closed', () => undefined);
 if (hasLock)
   void app
     .whenReady()
     .then(async () => {
-      if (process.platform === 'darwin') app.dock?.hide();
+      if (process.platform === 'darwin') {
+        app.setActivationPolicy('regular');
+        await app.dock?.show();
+      }
       const store = new Store(app.getPath('userData'));
       await store.load();
       const secrets = new SecretStore({
@@ -105,7 +148,10 @@ if (hasLock)
             },
         store,
       );
-      const providers = createProviders(fetch, createCgvTransport());
+      const cgvTransport = createCgvTransport();
+      const providers = createProviders(fetch, cgvTransport);
+      const catalogFetch = isSmoke ? (await import('./smoke.js')).smokeCatalogFetch : fetch;
+      catalog = new CatalogService(catalogFetch, isSmoke ? catalogFetch : cgvTransport);
       popups = new PopupAlerts();
       engine = new Engine(
         store,
@@ -128,6 +174,9 @@ if (hasLock)
               isLocalAlertSupported: popups.isSupported,
             },
       );
+      if (process.platform === 'darwin')
+        engine.trayWarning =
+          '메뉴 막대 아이콘 표시를 확인하지 못했어요. Dock의 Cinema Bar에서 다시 열 수 있어요. macOS 시스템 설정 → 메뉴 막대의 표시 허용 목록을 확인하세요. 항목이 없으면 Dock을 이용하세요.';
       try {
         await login.initialize();
       } catch {
@@ -168,13 +217,25 @@ if (hasLock)
       });
       if (!isSmoke) window.on('blur', () => window.hide());
       const icon = createTrayIcon();
-      tray = new Tray(icon);
+      tray = new Tray(icon, '8eb79195-4284-4aa7-86f5-80d3c029fdbd');
+      if (process.platform === 'darwin') tray.setTitle('CB');
+      sampleTray();
+      const trayTimer = setTimeout(sampleTray, 750);
+      trayTimer.unref();
+      window.on('closed', () => catalog.dispose());
+      const onDisplayChange = () => {
+        sampleTray();
+        if (window && !window.isDestroyed() && window.isVisible()) showWindow();
+      };
+      screen.on('display-added', onDisplayChange);
+      screen.on('display-removed', onDisplayChange);
+      screen.on('display-metrics-changed', onDisplayChange);
       tray.setToolTip('Cinema Bar · 나만의 상영 레이더');
       tray.on('click', toggleWindow);
       tray.on('right-click', () =>
         tray.popUpContextMenu(
           Menu.buildFromTemplate([
-            { label: 'Cinema Bar 열기', click: () => window.show() },
+            { label: 'Cinema Bar 열기', click: () => showWindow() },
             { label: '앱 종료', click: () => app.quit() },
           ]),
         ),
@@ -183,6 +244,8 @@ if (hasLock)
         if (!window.isDestroyed()) window.webContents.send('cinema:snapshot', engine.snapshot());
       });
       for (const channel of [
+        'getCatalog',
+        'cancelCatalog',
         'getSnapshot',
         'saveRule',
         'deleteRule',
@@ -205,6 +268,11 @@ if (hasLock)
           );
           const value = validateIpc(channel, payload);
           switch (channel) {
+            case 'getCatalog':
+              return catalog.get(value as CatalogRequest);
+            case 'cancelCatalog':
+              catalog.cancel((value as { requestId: string }).requestId);
+              return;
             case 'getSnapshot':
               return engine.snapshot();
             case 'saveRule':
@@ -257,6 +325,10 @@ if (hasLock)
           window,
           tray,
           toggleWindow,
+          showWindow,
+          traySamples,
+          calculateWindowBounds,
+          sampleTray,
           engine,
           store,
           login,
@@ -264,7 +336,7 @@ if (hasLock)
           securityPreferences,
           popups,
         });
-      } else toggleWindow();
+      } else showWindow();
     })
     .catch(() => {
       process.stderr.write('Cinema Bar 시작에 실패했습니다. 앱 저장소와 OS 권한을 확인하세요.\n');

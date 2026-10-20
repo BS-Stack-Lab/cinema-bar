@@ -738,3 +738,47 @@ describe('QA persistence, login and IPC', () => {
     expect(set).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('catalog movie identity roundtrip', () => {
+  it('persists the selected ID in schema2 and retains it when editing other fields', async () => {
+    const f = await fixture();
+    await f.engine.setPaused(true);
+    const { revision: _revision, ...input } = rule;
+    void _revision;
+    await f.engine.saveRule({
+      ...input,
+      movieId: 'same-title-second',
+      movieTitle: '별의 영화',
+      theaterName: '공식 극장',
+    });
+    const reloaded = new Store(f.store.directory);
+    await reloaded.load();
+    expect(reloaded.state.schemaVersion).toBe(2);
+    expect(reloaded.state.rules[0]).toMatchObject({
+      movieId: 'same-title-second',
+      theaterId: rule.theaterId,
+      theaterName: '공식 극장',
+      movieTitle: '별의 영화',
+    });
+    expect(matches(reloaded.state.rules[0], { ...session, movieId: 'same-title-first' })).toBe(
+      false,
+    );
+    expect(matches(reloaded.state.rules[0], { ...session, movieId: 'same-title-second' })).toBe(
+      true,
+    );
+    const { revision: _savedRevision, ...edit } = reloaded.state.rules[0];
+    void _savedRevision;
+    await f.engine.saveRule({ ...edit, format: 'IMAX', isEnabled: false });
+    expect(f.store.state.rules[0].movieId).toBe('same-title-second');
+    expect(() => validateRule({ ...input, movieId: '' })).toThrow();
+  });
+  it('omits the invented MEGABOX region code while requesting the exact selected theater', async () => {
+    const fetcher = vi.fn(async () => Response.json(megabox));
+    const providers = createProviders(fetcher);
+    await providers.megabox({ ...rule, theaterId: '4121' }, new AbortController().signal);
+    const call = fetcher.mock.calls[0] as unknown as [string, RequestInit];
+    const form = new URLSearchParams(String(call[1].body));
+    expect(form.has('areaCd1')).toBe(false);
+    expect(form.get('brchNo1')).toBe('4121');
+  });
+});

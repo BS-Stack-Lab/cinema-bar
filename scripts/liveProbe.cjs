@@ -104,11 +104,15 @@ void (async () => {
       format: 'ALL',
       isEnabled: true,
     });
+    const startDate = koreanToday();
+    const dates = [startDate, koreanToday(Date.parse(`${startDate}T12:00:00+09:00`) + 86400000)];
+    evidence.selectionDates = dates;
     for (const provider of ['cgv', 'megabox', 'lottecinema']) {
       phase = `${provider}:selection`;
       let rule = base(provider);
       let selected;
       let selectionRows = 0;
+      let lotteMovies;
       if (provider === 'lottecinema') {
         const form = new FormData();
         form.set(
@@ -121,7 +125,7 @@ void (async () => {
             memberOnNo: '0',
           }),
         );
-        const catalogResponse = await nodeFetch(
+        const response = await nodeFetch(
           'https://www.lottecinema.co.kr/LCWS/Ticketing/TicketingData.aspx',
           {
             method: 'POST',
@@ -131,31 +135,40 @@ void (async () => {
             signal: AbortSignal.timeout(15000),
           },
         );
-        assert.equal(catalogResponse.status, 200);
-        const catalog = await catalogResponse.json();
+        assert.equal(response.status, 200);
+        const catalog = await response.json();
         assert.ok(Array.isArray(catalog.Movies?.Movies?.Items));
-        for (const movie of catalog.Movies.Movies.Items.slice(0, 15)) {
-          const candidate = {
-            ...rule,
-            movieTitle: movie.MovieNameKR,
-            movieId: String(movie.RepresentationMovieCode),
-          };
+        lotteMovies = catalog.Movies.Movies.Items.slice(0, 15);
+      }
+      const selectionAttempts = [];
+      for (const date of dates) {
+        rule = { ...base(provider), date };
+        const candidates =
+          provider === 'lottecinema'
+            ? lotteMovies.map((movie) => ({
+                ...rule,
+                movieTitle: movie.MovieNameKR,
+                movieId: String(movie.RepresentationMovieCode),
+              }))
+            : [rule];
+        for (const candidate of candidates) {
           const sessions = await providers[provider](candidate, new AbortController().signal);
           selected = sessions.find(
-            (s) => s.isBookable && s.theaterId === rule.theaterId && s.date === rule.date,
+            (s) => s.isBookable && s.theaterId === candidate.theaterId && s.date === date,
           );
+          selectionAttempts.push({
+            date,
+            movieId: candidate.movieId,
+            actualRows: sessions.length,
+            selected: !!selected,
+          });
           if (selected) {
             selectionRows = sessions.length;
             rule = candidate;
             break;
           }
         }
-      } else {
-        const sessions = await providers[provider](rule, new AbortController().signal);
-        selectionRows = sessions.length;
-        selected = sessions.find(
-          (s) => s.isBookable && s.theaterId === rule.theaterId && s.date === rule.date,
-        );
+        if (selected) break;
       }
       assert.ok(selected, `${provider}: must select at least one actual bookable showtime`);
       rule = {
@@ -233,6 +246,7 @@ void (async () => {
           rule,
           selected,
           selectionRows,
+          selectionAttempts,
           requestCount: evidence.requests.filter((r) => r.phase.startsWith(`${provider}:`)).length,
           first,
           second,

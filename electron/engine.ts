@@ -36,6 +36,7 @@ export class Engine {
   private shouldForce = false;
   private isStopped = false;
   loginWarning?: string;
+  trayWarning?: string;
   private listeners = new Set<() => void>();
   isOnline = true;
   isSuspended = false;
@@ -83,6 +84,7 @@ export class Engine {
       nextAt: this.nextDeadline(),
       recoveryError: this.store.recoveryError,
       loginWarning: this.loginWarning,
+      trayWarning: this.trayWarning,
       storagePath: this.store.directory,
     };
   }

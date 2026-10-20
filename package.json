@@ -18,7 +18,8 @@
     "probe:providers": "npm run test:live",
     "icons:generate": "node scripts/installRuntime.mjs && node scripts/generateIcons.mjs",
     "icons:check": "node scripts/installRuntime.mjs && node scripts/checkIcons.mjs",
-    "test:live": "node scripts/installRuntime.mjs && npm run compile && node scripts/runLiveProbe.mjs"
+    "test:live": "node scripts/installRuntime.mjs && npm run compile && node scripts/runLiveProbe.mjs",
+    "test:catalog-live": "node scripts/installRuntime.mjs && npm run compile && node scripts/runLiveProbe.mjs --catalog"
   },
   "dependencies": {
     "react": "19.3.1",

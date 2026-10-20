@@ -8,7 +8,7 @@ import {
   validateSettings,
   validateWebhook,
 } from './validation.js';
-import type { Provider } from './types.js';
+import { PROVIDERS, type Provider } from './types.js';
 export function validateSender(
   actual: unknown,
   expected: unknown,
@@ -19,6 +19,22 @@ export function validateSender(
 }
 export function validateIpc(channel: string, payload: unknown) {
   switch (channel) {
+    case 'getCatalog': {
+      const v = object(payload);
+      exact(v, ['provider', 'requestId', 'force']);
+      if (!PROVIDERS.includes(v.provider as Provider)) throw new Error('영화관을 선택하세요.');
+      const requestId = catalogRequestId(v.requestId);
+      return {
+        provider: v.provider as Provider,
+        requestId,
+        ...(v.force === undefined ? {} : { force: flag(v.force) }),
+      };
+    }
+    case 'cancelCatalog': {
+      const v = object(payload);
+      exact(v, ['requestId']);
+      return { requestId: catalogRequestId(v.requestId) };
+    }
     case 'saveRule':
       return validateRule(payload);
     case 'deleteRule':
@@ -49,4 +65,10 @@ export function validateIpc(channel: string, payload: unknown) {
     default:
       throw new Error('지원하지 않는 앱 요청입니다.');
   }
+}
+
+function catalogRequestId(value: unknown) {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/u.test(value))
+    throw new Error('올바른 목록 요청 ID가 필요합니다.');
+  return value;
 }

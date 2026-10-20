@@ -242,7 +242,6 @@ export function createProviders(
         playDe: rule.date.replaceAll('-', ''),
         sellChnlCd: 'ONLINE',
         brchNoListCnt: '1',
-        areaCd1: '11',
         spclbYn1: 'N',
         theabKindCd1: '',
         brchNo1: rule.theaterId,

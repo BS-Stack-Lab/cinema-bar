@@ -1,0 +1,167 @@
+{
+  "cgvRegions": {
+    "statusCode": 0,
+    "data": [
+      {
+        "regnGrpCd": "01",
+        "regnGrpNm": "서울",
+        "siteList": [
+          {
+            "siteNo": "0056",
+            "siteNm": "강남"
+          },
+          {
+            "siteNo": "0001",
+            "siteNm": "강변"
+          }
+        ]
+      },
+      {
+        "regnGrpCd": "02",
+        "regnGrpNm": "경기",
+        "siteList": [
+          {
+            "siteNo": "0260",
+            "siteNm": "경기광주"
+          },
+          {
+            "siteNo": "0270",
+            "siteNm": "고양백석"
+          }
+        ]
+      }
+    ]
+  },
+  "cgvMovies": {
+    "statusCode": 0,
+    "data": [
+      {
+        "movNo": "30001367",
+        "movNm": "극장판 치이카와-인어 섬의 비밀"
+      },
+      {
+        "movNo": "30001450",
+        "movNm": "실낙원"
+      },
+      {
+        "movNo": "30001601",
+        "movNm": "클레이페이스"
+      }
+    ]
+  },
+  "megabox": {
+    "statCd": 0,
+    "areaBrchList": [
+      {
+        "areaCd": "10",
+        "areaCdNm": "서울",
+        "brchNo": "1372",
+        "brchNm": "강남"
+      },
+      {
+        "areaCd": "10",
+        "areaCdNm": "서울",
+        "brchNo": "0081",
+        "brchNm": "픽쳐하우스&#40;휴관&#41;"
+      },
+      {
+        "areaCd": "30",
+        "areaCdNm": "경기",
+        "brchNo": "4121",
+        "brchNm": "고양스타필드"
+      }
+    ],
+    "movieList": [
+      {
+        "movieNo": "26058900",
+        "movieNm": "실낙원"
+      },
+      {
+        "movieNo": "26048500",
+        "movieNm": "극장판 치이카와: 인어 섬의 비밀"
+      },
+      {
+        "movieNo": "26062100",
+        "movieNm": "스틸레이"
+      }
+    ],
+    "crtnMovieList": [
+      {
+        "movieNo": "26062100",
+        "movieNm": "스틸레이"
+      }
+    ]
+  },
+  "lottecinema": {
+    "IsOK": "true",
+    "CinemaDivison": {
+      "IsOK": "true",
+      "AreaDivisions": {
+        "Items": [
+          {
+            "DivisionCode": 1,
+            "DetailDivisionCode": "0001",
+            "GroupNameKR": "서울"
+          },
+          {
+            "DivisionCode": 1,
+            "DetailDivisionCode": "0002",
+            "GroupNameKR": "경기/인천"
+          }
+        ]
+      }
+    },
+    "Cinemas": {
+      "IsOK": "true",
+      "Cinemas": {
+        "Items": [
+          {
+            "DivisionCode": 1,
+            "DetailDivisionCode": "0001",
+            "CinemaID": 1013,
+            "CinemaNameKR": "가산디지털"
+          },
+          {
+            "DivisionCode": 1,
+            "DetailDivisionCode": "0001",
+            "CinemaID": 9094,
+            "CinemaNameKR": "가양"
+          },
+          {
+            "DivisionCode": 1,
+            "DetailDivisionCode": "0002",
+            "CinemaID": 3051,
+            "CinemaNameKR": "검단아라"
+          },
+          {
+            "DivisionCode": 1,
+            "DetailDivisionCode": "0002",
+            "CinemaID": 3030,
+            "CinemaNameKR": "광교"
+          },
+          {
+            "DivisionCode": 2,
+            "DetailDivisionCode": "0200",
+            "CinemaID": 9128,
+            "CinemaNameKR": "아산터미널"
+          }
+        ]
+      }
+    },
+    "Movies": {
+      "IsOK": "true",
+      "Movies": {
+        "Items": [
+          {
+            "RepresentationMovieCode": "24128",
+            "MovieNameKR": "오디세이"
+          },
+          {
+            "RepresentationMovieCode": "24708",
+            "MovieNameKR": "극장판 치이카와: 인어 섬의 비밀"
+          }
+        ]
+      }
+    }
+  }
+}

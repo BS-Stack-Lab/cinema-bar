@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import App from '../src/App';
 import { status } from '../src/status';
 import type { CinemaApi, Snapshot } from '../electron/types';
-import { rule, NOW } from './fixtures';
+import { catalogFixture, rule, NOW } from './fixtures';
 const empty: Snapshot = {
   rules: [],
   settings: {
@@ -35,6 +35,8 @@ function mount(snapshot = empty) {
   }));
   const api = {
     getSnapshot: vi.fn(async () => snapshot),
+    getCatalog: vi.fn(async ({ provider }) => catalogFixture(provider)),
+    cancelCatalog: vi.fn(async () => undefined),
     onSnapshot: vi.fn(() => () => undefined),
     saveRule,
     deleteRule: vi.fn(async () => snapshot),
@@ -106,30 +108,32 @@ describe('QA accessible renderer', () => {
     const { saveRule } = mount();
     await screen.findByRole('heading', { name: /Cinema Bar/ });
     fireEvent.click(screen.getByRole('button', { name: /첫 감시 추가/ }));
-    fireEvent.change(screen.getByLabelText('극장 ID'), { target: { value: '1372' } });
-    fireEvent.change(screen.getByLabelText('극장 이름'), { target: { value: '코엑스' } });
-    fireEvent.change(screen.getByLabelText('작품 제목'), { target: { value: '   ' } });
+    await screen.findByRole('option', { name: '서울' });
+    fireEvent.change(screen.getByLabelText('작품 검색'), { target: { value: '   ' } });
     fireEvent.submit(screen.getByRole('button', { name: '감시 저장' }).closest('form')!);
     expect(await screen.findByRole('alert')).toBeTruthy();
     expect(saveRule).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: '취소' }));
-    expect(screen.queryByLabelText('작품 제목')).toBeNull();
+    expect(screen.queryByLabelText('작품 검색')).toBeNull();
   });
   it('rule-crud-restart: form submits only saved validated fields and secret input clears', async () => {
     const { api, saveRule } = mount();
     await screen.findByRole('heading', { name: /Cinema Bar/ });
     fireEvent.click(screen.getByRole('button', { name: /첫 감시 추가/ }));
-    for (const [label, value] of [
-      ['극장 ID', '1372'],
-      ['극장 이름', '코엑스'],
-      ['작품 제목', '별의 영화'],
-      ['상영일', '2099-01-01'],
-    ])
-      fireEvent.change(screen.getByLabelText(label), { target: { value } });
+    await screen.findByRole('option', { name: '서울' });
+    fireEvent.change(screen.getByLabelText('지역'), { target: { value: '01' } });
+    fireEvent.change(screen.getByLabelText('극장'), { target: { value: '0013' } });
+    fireEvent.change(screen.getByLabelText('작품 검색 결과'), { target: { value: 'movie-1' } });
+    fireEvent.change(screen.getByLabelText('상영일'), { target: { value: '2099-01-01' } });
     expect(saveRule).not.toHaveBeenCalled();
     fireEvent.submit(screen.getByRole('button', { name: '감시 저장' }).closest('form')!);
     await waitFor(() => expect(saveRule).toHaveBeenCalledTimes(1));
-    expect(saveRule.mock.calls[0][0]).toMatchObject({ theaterId: '1372', movieTitle: '별의 영화' });
+    expect(saveRule.mock.calls[0][0]).toMatchObject({
+      theaterId: '0013',
+      theaterName: '용산아이파크몰',
+      movieId: 'movie-1',
+      movieTitle: '별의 영화',
+    });
     fireEvent.click(screen.getByRole('tab', { name: '설정' }));
     fireEvent.change(screen.getByLabelText('개인 웹훅 주소'), {
       target: { value: 'fixture-input' },
@@ -234,5 +238,218 @@ describe('local alert settings and factual status', () => {
     } finally {
       clock.mockRestore();
     }
+  });
+});
+
+describe('official catalog selection and legacy compatibility', () => {
+  async function openNew() {
+    const result = mount();
+    await screen.findByRole('heading', { name: /Cinema Bar/ });
+    fireEvent.click(screen.getByRole('button', { name: /첫 감시 추가/ }));
+    await screen.findByRole('option', { name: '서울' });
+    return result;
+  }
+  function choose() {
+    fireEvent.change(screen.getByLabelText('지역'), { target: { value: '01' } });
+    fireEvent.change(screen.getByLabelText('극장'), { target: { value: '0013' } });
+    fireEvent.change(screen.getByLabelText('작품 검색 결과'), { target: { value: 'anime-2' } });
+  }
+  it('searches anime locally, requires explicit identity and invalidates it on query edits', async () => {
+    const { api, saveRule } = await openNew();
+    expect(screen.queryByLabelText('극장 ID')).toBeNull();
+    expect(screen.queryByLabelText('극장 이름')).toBeNull();
+    fireEvent.change(screen.getByLabelText('작품 검색'), { target: { value: '치이카와' } });
+    expect(within(screen.getByLabelText('작품 검색 결과')).getAllByRole('option')).toHaveLength(3);
+    choose();
+    expect(screen.getByText(/선택: 극장판 치이카와/)).toBeTruthy();
+    expect((screen.getByRole('button', { name: '감시 저장' }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
+    fireEvent.change(screen.getByLabelText('작품 검색'), {
+      target: { value: '극장판 치이카와: 인어 섬의 비밀' },
+    });
+    expect((screen.getByLabelText('작품 검색 결과') as HTMLSelectElement).value).toBe('');
+    expect((screen.getByRole('button', { name: '감시 저장' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    expect(api.getCatalog).toHaveBeenCalledTimes(1);
+    fireEvent.change(screen.getByLabelText('작품 검색 결과'), { target: { value: 'anime-2' } });
+    fireEvent.submit(screen.getByRole('button', { name: '감시 저장' }).closest('form')!);
+    await waitFor(() => expect(saveRule).toHaveBeenCalledTimes(1));
+    expect(saveRule.mock.calls[0][0]).toMatchObject({
+      movieId: 'anime-2',
+      movieTitle: '극장판 치이카와: 인어 섬의 비밀',
+      theaterId: '0013',
+    });
+  });
+  it('resets only the theater on region changes and resets all selections on provider changes', async () => {
+    const { api } = await openNew();
+    choose();
+    fireEvent.change(screen.getByLabelText('지역'), { target: { value: '02' } });
+    expect((screen.getByLabelText('극장') as HTMLSelectElement).value).toBe('');
+    expect((screen.getByLabelText('작품 검색 결과') as HTMLSelectElement).value).toBe('anime-2');
+    expect(
+      within(screen.getByLabelText('극장')).queryByRole('option', { name: '용산아이파크몰' }),
+    ).toBeNull();
+    fireEvent.change(screen.getByLabelText('영화관'), { target: { value: 'megabox' } });
+    await waitFor(() => expect(api.getCatalog).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect((screen.getByLabelText('지역') as HTMLSelectElement).disabled).toBe(false),
+    );
+    expect((screen.getByLabelText('지역') as HTMLSelectElement).value).toBe('');
+    expect((screen.getByLabelText('작품 검색 결과') as HTMLSelectElement).value).toBe('');
+    expect((screen.getByLabelText('작품 검색') as HTMLInputElement).value).toBe('');
+    expect(api.cancelCatalog).toHaveBeenCalledWith({ requestId: expect.any(String) });
+  });
+  it.each([false, true])(
+    'preserves an unlisted saved choice and optional movieId=%s without catalog access',
+    async (hasId) => {
+      const saved = { ...rule, ...(hasId ? { movieId: 'unlisted' } : {}) };
+      const { api, saveRule } = mount({ ...empty, rules: [saved] });
+      await screen.findByRole('heading', { name: /Cinema Bar/ });
+      fireEvent.click(screen.getByRole('tab', { name: '감시 목록' }));
+      fireEvent.click(screen.getByRole('button', { name: '별의 영화 수정' }));
+      expect(screen.getByText('저장된 선택')).toBeTruthy();
+      expect(screen.queryByLabelText('지역')).toBeNull();
+      fireEvent.change(screen.getByLabelText('상영 포맷'), { target: { value: 'IMAX' } });
+      fireEvent.submit(screen.getByRole('button', { name: '감시 저장' }).closest('form')!);
+      await waitFor(() => expect(saveRule).toHaveBeenCalledTimes(1));
+      expect(saveRule.mock.calls[0][0]).toMatchObject({
+        theaterId: rule.theaterId,
+        theaterName: rule.theaterName,
+        movieTitle: rule.movieTitle,
+        format: 'IMAX',
+      });
+      expect(saveRule.mock.calls[0][0].movieId).toBe(hasId ? 'unlisted' : undefined);
+      expect(api.getCatalog).not.toHaveBeenCalled();
+    },
+  );
+  it('requires a complete fresh choice after explicitly leaving the saved summary', async () => {
+    const { api } = mount({ ...empty, rules: [{ ...rule, movieId: 'unlisted' }] });
+    vi.mocked(api.getCatalog).mockRejectedValue(new Error('공급자 형식 변경'));
+    await screen.findByRole('heading', { name: /Cinema Bar/ });
+    fireEvent.click(screen.getByRole('tab', { name: '감시 목록' }));
+    fireEvent.click(screen.getByRole('button', { name: '별의 영화 수정' }));
+    fireEvent.click(screen.getByRole('button', { name: '극장·작품 다시 선택' }));
+    expect(await screen.findByText('공급자 형식 변경')).toBeTruthy();
+    expect((screen.getByRole('button', { name: '감시 저장' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+  });
+  it('distinguishes empty official lists, no search results and a retryable error while preserving other fields', async () => {
+    const { api } = await openNew();
+    fireEvent.change(screen.getByLabelText('작품 검색'), { target: { value: '찾을수없음' } });
+    expect(screen.getByText(/검색 결과가 없어요/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('상영 포맷'), { target: { value: 'IMAX' } });
+    vi.mocked(api.getCatalog).mockRejectedValueOnce(new Error('네트워크 시간 초과'));
+    fireEvent.click(screen.getByRole('button', { name: '목록 새로고침' }));
+    expect(await screen.findByText('네트워크 시간 초과')).toBeTruthy();
+    expect((screen.getByLabelText('상영 포맷') as HTMLSelectElement).value).toBe('IMAX');
+    vi.mocked(api.getCatalog).mockResolvedValueOnce({ ...catalogFixture(), movies: [] });
+    fireEvent.click(screen.getByRole('button', { name: '재시도' }));
+    expect(await screen.findByText('공식 예매 목록에 작품이 없어요.')).toBeTruthy();
+    expect(api.getCatalog).toHaveBeenLastCalledWith(expect.objectContaining({ force: true }));
+  });
+  it('blocks refresh-time saves, preserves selections and ignores an old provider response or error', async () => {
+    const { api } = await openNew();
+    choose();
+    let resolve!: (value: ReturnType<typeof catalogFixture>) => void;
+    vi.mocked(api.getCatalog).mockImplementationOnce(
+      () =>
+        new Promise((done) => {
+          resolve = done;
+        }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: '목록 새로고침' }));
+    expect(screen.getByText(/불러오고 있어요/)).toBeTruthy();
+    expect((screen.getByRole('button', { name: '감시 저장' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    resolve(catalogFixture());
+    await waitFor(() =>
+      expect(
+        (screen.getByRole('button', { name: '감시 저장' }) as HTMLButtonElement).disabled,
+      ).toBe(false),
+    );
+    let reject!: (error: Error) => void;
+    vi.mocked(api.getCatalog).mockImplementationOnce(
+      () =>
+        new Promise((_done, fail) => {
+          reject = fail;
+        }),
+    );
+    fireEvent.click(screen.getByRole('button', { name: '목록 새로고침' }));
+    fireEvent.change(screen.getByLabelText('영화관'), { target: { value: 'lottecinema' } });
+    await waitFor(() =>
+      expect((screen.getByLabelText('지역') as HTMLSelectElement).disabled).toBe(false),
+    );
+    reject(new Error('late CGV error'));
+    await waitFor(() => expect(screen.queryByText('late CGV error')).toBeNull());
+    expect((screen.getByLabelText('영화관') as HTMLSelectElement).value).toBe('lottecinema');
+  });
+  it('keeps the current Lotte catalog, selections and save state after a late CGV success', async () => {
+    const { api, saveRule } = await openNew();
+    let resolve!: (value: ReturnType<typeof catalogFixture>) => void;
+    const staleCgv = new Promise<ReturnType<typeof catalogFixture>>((done) => {
+      resolve = done;
+    });
+    const lotte = {
+      ...catalogFixture('lottecinema'),
+      regions: [{ id: 'lotte-region', name: '롯데 지역' }],
+      theaters: [{ id: '1016', name: '롯데 극장', regionId: 'lotte-region' }],
+      movies: [{ id: '24708', title: '롯데 선택 작품' }],
+    };
+    vi.mocked(api.getCatalog).mockReturnValueOnce(staleCgv).mockResolvedValueOnce(lotte);
+    fireEvent.click(screen.getByRole('button', { name: '목록 새로고침' }));
+    expect(screen.getByText(/불러오고 있어요/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('영화관'), { target: { value: 'lottecinema' } });
+    await screen.findByRole('option', { name: '롯데 지역' });
+    fireEvent.change(screen.getByLabelText('지역'), { target: { value: 'lotte-region' } });
+    fireEvent.change(screen.getByLabelText('극장'), { target: { value: '1016' } });
+    fireEvent.change(screen.getByLabelText('작품 검색 결과'), { target: { value: '24708' } });
+    fireEvent.change(screen.getByLabelText('상영일'), { target: { value: '2099-01-01' } });
+    expect((screen.getByRole('button', { name: '감시 저장' }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
+    await act(async () => {
+      resolve(catalogFixture('cgv'));
+    });
+    expect((screen.getByLabelText('영화관') as HTMLSelectElement).value).toBe('lottecinema');
+    expect((screen.getByLabelText('지역') as HTMLSelectElement).value).toBe('lotte-region');
+    expect(
+      within(screen.getByLabelText('지역')).getByRole('option', { name: '롯데 지역' }),
+    ).toBeTruthy();
+    expect(
+      within(screen.getByLabelText('지역')).queryByRole('option', { name: '서울' }),
+    ).toBeNull();
+    expect((screen.getByLabelText('극장') as HTMLSelectElement).value).toBe('1016');
+    expect((screen.getByLabelText('극장') as HTMLSelectElement).disabled).toBe(false);
+    expect((screen.getByLabelText('작품 검색 결과') as HTMLSelectElement).value).toBe('24708');
+    expect(screen.getByText(/선택: 롯데 선택 작품/)).toBeTruthy();
+    expect(screen.queryByText(/불러오고 있어요/)).toBeNull();
+    expect((screen.getByRole('button', { name: '감시 저장' }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
+    fireEvent.submit(screen.getByRole('button', { name: '감시 저장' }).closest('form')!);
+    await waitFor(() => expect(saveRule).toHaveBeenCalledTimes(1));
+    expect(saveRule.mock.calls[0][0]).toMatchObject({
+      provider: 'lottecinema',
+      theaterId: '1016',
+      theaterName: '롯데 극장',
+      movieId: '24708',
+      movieTitle: '롯데 선택 작품',
+    });
+  });
+  it('supports native select keyboard focus and cancels a pending request when the form closes', async () => {
+    const { api } = await openNew();
+    const user = userEvent.setup();
+    screen.getByLabelText('지역').focus();
+    await user.selectOptions(screen.getByLabelText('지역'), '01');
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByLabelText('극장'));
+    await user.selectOptions(screen.getByLabelText('극장'), '0013');
+    expect((screen.getByLabelText('극장') as HTMLSelectElement).value).toBe('0013');
+    fireEvent.click(screen.getByRole('button', { name: '취소' }));
+    expect(api.cancelCatalog).toHaveBeenCalledWith({ requestId: expect.any(String) });
   });
 });

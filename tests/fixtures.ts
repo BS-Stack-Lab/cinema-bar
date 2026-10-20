@@ -1,4 +1,4 @@
-import type { Rule, Session } from '../electron/types.js';
+import type { Catalog, Provider, Rule, Session } from '../electron/types.js';
 export const NOW = Date.UTC(2099, 0, 1);
 export const rule: Rule = {
   id: 'rule-1',
@@ -85,3 +85,23 @@ export const lotte = {
     ],
   },
 };
+
+export function catalogFixture(provider: Provider = 'cgv'): Catalog {
+  return {
+    provider,
+    fetchedAt: NOW,
+    regions: [
+      { id: '01', name: '서울' },
+      { id: '02', name: '경기' },
+    ],
+    theaters: [
+      { id: '0013', name: '용산아이파크몰', regionId: '01' },
+      { id: '1372', name: '공식 경기 극장', regionId: '02' },
+    ],
+    movies: [
+      { id: 'movie-1', title: '별의 영화' },
+      { id: 'anime-1', title: '극장판 치이카와: 인어 섬의 비밀' },
+      { id: 'anime-2', title: '극장판 치이카와: 인어 섬의 비밀' },
+    ],
+  };
+}

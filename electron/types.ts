@@ -8,6 +8,7 @@ export interface RuleInput {
   theaterId: string;
   theaterName: string;
   movieTitle: string;
+  movieId?: string;
   date: string;
   format: Format;
   isEnabled: boolean;
@@ -97,9 +98,24 @@ export interface Snapshot {
   nextAt?: number;
   recoveryError?: string;
   loginWarning?: string;
+  trayWarning?: string;
   storagePath: string;
 }
+export interface Catalog {
+  provider: Provider;
+  fetchedAt: number;
+  regions: { id: string; name: string }[];
+  theaters: { id: string; name: string; regionId: string }[];
+  movies: { id: string; title: string }[];
+}
+export interface CatalogRequest {
+  provider: Provider;
+  requestId: string;
+  force?: boolean;
+}
 export interface CinemaApi {
+  getCatalog(input: CatalogRequest): Promise<Catalog>;
+  cancelCatalog(input: { requestId: string }): Promise<void>;
   getSnapshot(): Promise<Snapshot>;
   saveRule(input: RuleInput): Promise<Snapshot>;
   deleteRule(id: string): Promise<Snapshot>;

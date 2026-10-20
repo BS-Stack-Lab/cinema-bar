@@ -672,3 +672,45 @@ section[role='tabpanel'] {
 footer {
   margin-top: 16px;
 }
+
+.catalogSelection,
+.savedSelection {
+  display: grid;
+  gap: 12px;
+  margin: 14px 0;
+  min-width: 0;
+}
+.catalogSelection select[size] {
+  height: 132px;
+  padding: 6px;
+}
+.catalogSelection option {
+  padding: 5px 3px;
+}
+.catalogSelection [role='status'],
+.savedSelection small {
+  font-size: 11px;
+  color: #c0b6d1;
+  line-height: 1.6;
+}
+.savedSelection {
+  border: 1px solid #51465e;
+  border-radius: 10px;
+  padding: 12px;
+}
+.savedSelection p,
+.catalogError p {
+  overflow-wrap: anywhere;
+  margin: 0;
+}
+.catalogError {
+  color: #f3c397;
+  font-size: 12px;
+}
+.ruleForm select,
+.ruleForm input {
+  min-width: 0;
+}
+.ruleForm .buttonRow {
+  padding-bottom: 6px;
+}

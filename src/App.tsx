@@ -1,8 +1,14 @@
 import { status } from './status';
 import { useEffect, useState, type FormEvent } from 'react';
-import { FORMATS, type Provider, type RuleInput, type Snapshot } from '../electron/types';
+import {
+  FORMATS,
+  type Catalog,
+  type Provider,
+  type RuleInput,
+  type Snapshot,
+} from '../electron/types';
 import { isRuleEligible } from '../electron/eligibility';
-import { koreanToday, validateRule } from '../electron/validation';
+import { koreanToday, normalizeTitle, validateRule } from '../electron/validation';
 const LABELS: Record<Provider, string> = {
   cgv: 'CGV',
   megabox: 'MEGABOX',
@@ -141,6 +147,11 @@ export default function App() {
       {snapshot.loginWarning && (
         <div className="notice" role="status">
           {snapshot.loginWarning}
+        </div>
+      )}
+      {snapshot.trayWarning && (
+        <div className="notice" role="status">
+          {snapshot.trayWarning}
         </div>
       )}
       {snapshot.localAlertWarning && (
@@ -323,9 +334,8 @@ export default function App() {
                           checked={rule.isEnabled}
                           aria-label={`${rule.movieTitle} 감시 활성화`}
                           onChange={(event) => {
-                            const { revision: _revision, movieId: _movieId, ...input } = rule;
+                            const { revision: _revision, ...input } = rule;
                             void _revision;
-                            void _movieId;
                             void action(() =>
                               window.cinema.saveRule({ ...input, isEnabled: event.target.checked }),
                             );
@@ -600,6 +610,7 @@ function RuleForm({ value, isBusy, onCancel, onSave }: RuleFormProps) {
           theaterId: value.theaterId,
           theaterName: value.theaterName,
           movieTitle: value.movieTitle,
+          ...(value.movieId === undefined ? {} : { movieId: value.movieId }),
           date: value.date,
           format: value.format,
           isEnabled: value.isEnabled,
@@ -614,18 +625,89 @@ function RuleForm({ value, isBusy, onCancel, onSave }: RuleFormProps) {
           isEnabled: true,
         },
   );
+  const [isSelecting, setIsSelecting] = useState(!value);
+  const [regionId, setRegionId] = useState('');
+  const [query, setQuery] = useState('');
+  const [catalog, setCatalog] = useState<Catalog>();
+  const [isLoading, setIsLoading] = useState(!value);
+  const [catalogError, setCatalogError] = useState('');
+  const [refresh, setRefresh] = useState(0);
   const [error, setError] = useState('');
-  function update<K extends keyof RuleInput>(key: K, value: RuleInput[K]) {
-    setForm((previous) => ({ ...previous, [key]: value }));
+  useEffect(() => {
+    if (!isSelecting) return;
+    let isActive = true;
+    const provider = form.provider;
+    const requestId = `catalog-${crypto.randomUUID()}`;
+    void window.cinema
+      .getCatalog({ provider, requestId, ...(refresh ? { force: true } : {}) })
+      .then((result) => {
+        if (isActive && result.provider === provider) setCatalog(result);
+      })
+      .catch((failure: unknown) => {
+        if (isActive)
+          setCatalogError(
+            failure instanceof Error
+              ? failure.message.replace(/^Error invoking remote method '[^']+': Error: /u, '')
+              : '공식 목록을 읽지 못했어요. 재시도하세요.',
+          );
+      })
+      .finally(() => {
+        if (isActive) setIsLoading(false);
+      });
+    return () => {
+      isActive = false;
+      void window.cinema.cancelCatalog({ requestId }).catch(() => undefined);
+    };
+  }, [form.provider, isSelecting, refresh]);
+  function update<K extends keyof RuleInput>(key: K, fieldValue: RuleInput[K]) {
+    setForm((previous) => ({ ...previous, [key]: fieldValue }));
   }
+  function reselect(provider = form.provider) {
+    setForm((previous) => ({
+      ...previous,
+      provider,
+      theaterId: '',
+      theaterName: '',
+      movieId: undefined,
+      movieTitle: '',
+    }));
+    setRegionId('');
+    setQuery('');
+    setCatalog(undefined);
+    setCatalogError('');
+    setIsLoading(true);
+    setIsSelecting(true);
+    setRefresh(0);
+    setError('');
+  }
+  function refreshCatalog() {
+    setIsLoading(true);
+    setCatalog(undefined);
+    setCatalogError('');
+    setRefresh((n) => n + 1);
+  }
+  const current = catalog?.provider === form.provider ? catalog : undefined;
+  const theaters = current?.theaters.filter((t) => t.regionId === regionId) ?? [];
+  const movies =
+    current?.movies.filter((m) => normalizeTitle(m.title).includes(normalizeTitle(query))) ?? [];
+  const hasSelection =
+    !!current &&
+    !isLoading &&
+    !catalogError &&
+    current.theaters.some(
+      (t) => t.id === form.theaterId && t.name === form.theaterName && t.regionId === regionId,
+    ) &&
+    current.movies.some((m) => m.id === form.movieId && m.title === form.movieTitle);
+  const canSave = !isBusy && (!isSelecting || hasSelection);
   async function submit(event: FormEvent) {
     event.preventDefault();
     try {
+      if (!canSave) throw new Error('지역·극장과 검색 결과의 작품을 선택하세요.');
       validateRule(form);
       setError('');
       await onSave(form);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : '입력을 확인하세요.');
+    } catch (failure) {
+      setError(failure instanceof Error ? failure.message : '입력을 확인하세요.');
     }
   }
   return (
@@ -636,54 +718,146 @@ function RuleForm({ value, isBusy, onCancel, onSave }: RuleFormProps) {
         <select
           aria-label="영화관"
           value={form.provider}
-          onChange={(event) => update('provider', event.target.value as Provider)}
+          onChange={(event) => reselect(event.target.value as Provider)}
         >
-          {Object.entries(LABELS).map(([key, label]) => (
+          {Object.entries(LABELS).map(([key, name]) => (
             <option key={key} value={key}>
-              {label}
+              {name}
             </option>
           ))}
         </select>
       </label>
-      <div className="fields">
-        <label>
-          극장 ID
-          <input
-            required
-            maxLength={24}
-            aria-label="극장 ID"
-            value={form.theaterId}
-            onChange={(event) => update('theaterId', event.target.value)}
-            placeholder="공식 사이트의 극장 ID"
-          />
-        </label>
-        <label>
-          극장 이름
-          <input
-            required
-            maxLength={80}
-            aria-label="극장 이름"
-            value={form.theaterName}
-            onChange={(event) => update('theaterName', event.target.value)}
-            placeholder="예: 코엑스"
-          />
-        </label>
-      </div>
-      <p className="hint">
-        영화관 공식 예매 페이지의 극장 번호를 입력하세요. CGV siteNo, Megabox brchNo, 롯데
-        CinemaID를 사용해요.
-      </p>
-      <label>
-        작품 제목 (전체 일치)
-        <input
-          required
-          maxLength={120}
-          aria-label="작품 제목"
-          value={form.movieTitle}
-          onChange={(event) => update('movieTitle', event.target.value)}
-          placeholder="찾고 있는 작품의 정확한 제목"
-        />
-      </label>
+      {!isSelecting ? (
+        <div className="savedSelection">
+          <strong>저장된 선택</strong>
+          <p>
+            {form.theaterName} · {form.movieTitle}
+          </p>
+          <small>
+            극장 {form.theaterId}
+            {form.movieId ? ` · 작품 ${form.movieId}` : ''}
+          </small>
+          <button type="button" onClick={() => reselect()}>
+            극장·작품 다시 선택
+          </button>
+        </div>
+      ) : (
+        <div className="catalogSelection" aria-busy={isLoading}>
+          <div className="sectionTitle">
+            <span>공식 예매 목록</span>
+            <button type="button" className="small" disabled={isLoading} onClick={refreshCatalog}>
+              목록 새로고침
+            </button>
+          </div>
+          {isLoading && <p role="status">공식 지역·극장·작품 목록을 불러오고 있어요…</p>}
+          {catalogError && (
+            <div className="catalogError" role="alert">
+              <p>{catalogError}</p>
+              <button type="button" onClick={refreshCatalog}>
+                재시도
+              </button>
+            </div>
+          )}
+          <label>
+            지역
+            <select
+              aria-label="지역"
+              value={regionId}
+              disabled={!current || isLoading}
+              onChange={(event) => {
+                setRegionId(event.target.value);
+                setForm((previous) => ({ ...previous, theaterId: '', theaterName: '' }));
+              }}
+            >
+              <option value="">지역을 선택하세요</option>
+              {current?.regions.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            극장
+            <select
+              aria-label="극장"
+              value={form.theaterId}
+              disabled={!current || !regionId || isLoading}
+              onChange={(event) => {
+                const theater = theaters.find((t) => t.id === event.target.value);
+                setForm((previous) => ({
+                  ...previous,
+                  theaterId: theater?.id ?? '',
+                  theaterName: theater?.name ?? '',
+                }));
+              }}
+            >
+              <option value="">{regionId ? '극장을 선택하세요' : '지역을 먼저 선택하세요'}</option>
+              {theaters.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          {current && (!current.regions.length || (regionId && !theaters.length)) && (
+            <p role="status">공식 목록에 선택 가능한 극장이 없어요.</p>
+          )}
+          <label>
+            작품 검색
+            <input
+              type="search"
+              aria-label="작품 검색"
+              maxLength={120}
+              value={query}
+              disabled={!current || isLoading}
+              placeholder="애니메이션도 제목으로 검색하세요"
+              onChange={(event) => {
+                setQuery(event.target.value);
+                setForm((previous) => ({ ...previous, movieId: undefined, movieTitle: '' }));
+              }}
+            />
+          </label>
+          <p className="hint">
+            공식 예매 목록의 작품을 검색해요. 아직 목록에 없는 작품은 나중에 다시 확인하세요.
+          </p>
+          <label>
+            작품 검색 결과
+            <select
+              size={5}
+              aria-label="작품 검색 결과"
+              value={form.movieId ?? ''}
+              disabled={!current || isLoading || !movies.length}
+              onChange={(event) => {
+                const movie = movies.find((m) => m.id === event.target.value);
+                setForm((previous) => ({
+                  ...previous,
+                  movieId: movie?.id,
+                  movieTitle: movie?.title ?? '',
+                }));
+              }}
+            >
+              <option value="" disabled>
+                작품을 선택하세요
+              </option>
+              {movies.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.title} · {m.id}
+                </option>
+              ))}
+            </select>
+          </label>
+          {current && (
+            <p role="status" aria-live="polite">
+              {!current.movies.length
+                ? '공식 예매 목록에 작품이 없어요.'
+                : !movies.length
+                  ? '검색 결과가 없어요. 다른 제목으로 검색하세요.'
+                  : `${movies.length}개 작품${form.movieId ? ` · 선택: ${form.movieTitle}` : ' · 결과에서 작품을 선택하세요.'}`}
+            </p>
+          )}
+        </div>
+      )}
       <div className="fields">
         <label>
           상영일 (한국 시간)
@@ -725,7 +899,7 @@ function RuleForm({ value, isBusy, onCancel, onSave }: RuleFormProps) {
         </p>
       )}
       <div className="buttonRow">
-        <button className="primary" type="submit" disabled={isBusy}>
+        <button className="primary" type="submit" disabled={!canSave}>
           감시 저장
         </button>
         <button type="button" onClick={onCancel}>

@@ -22,12 +22,12 @@
         <td align="center">Apple Silicon(M1 이상) · macOS 13 이상</td>
       </tr>
       <tr>
-        <td align="center"><a href="https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.2.0/Cinema-Bar-0.2.0-Windows-x64-Setup.exe"><strong>Windows 설치 파일 다운로드 (.exe)</strong></a></td>
-        <td align="center"><a href="https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.2.0/Cinema-Bar-0.2.0-macOS-arm64.dmg"><strong>macOS 설치 파일 다운로드 (.dmg)</strong></a></td>
+        <td align="center"><a href="https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.2.1/Cinema-Bar-0.2.1-Windows-x64-Setup.exe"><strong>Windows 설치 파일 다운로드 (.exe)</strong></a></td>
+        <td align="center"><a href="https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.2.1/Cinema-Bar-0.2.1-macOS-arm64.dmg"><strong>macOS 설치 파일 다운로드 (.dmg)</strong></a></td>
       </tr>
       <tr>
-        <td align="center"><a href="https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.2.0/Cinema-Bar-0.2.0-Windows-x64.zip">Windows ZIP 다운로드</a></td>
-        <td align="center"><a href="https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.2.0/Cinema-Bar-0.2.0-macOS-arm64.zip">macOS ZIP 다운로드</a></td>
+        <td align="center"><a href="https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.2.1/Cinema-Bar-0.2.1-Windows-x64.zip">Windows ZIP 다운로드</a></td>
+        <td align="center"><a href="https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.2.1/Cinema-Bar-0.2.1-macOS-arm64.zip">macOS ZIP 다운로드</a></td>
       </tr>
       <tr>
         <td align="center"><a href="#windows-앱으로-사용하기">Windows 설치 방법 →</a></td>
@@ -36,8 +36,8 @@
     </tbody>
   </table>
   <p>
-    v0.2.0 · <a href="https://github.com/BS-Stack-Lab/cinema-bar/releases/latest">전체 릴리스</a> ·
-    <a href="https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.2.0/SHA256SUMS.txt">SHA256 체크섬</a>
+    v0.2.1 · <a href="https://github.com/BS-Stack-Lab/cinema-bar/releases/latest">전체 릴리스</a> ·
+    <a href="https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.2.1/SHA256SUMS.txt">SHA256 체크섬</a>
   </p>
   <p>
     <a href="#주요-기능">주요 기능</a> ·
@@ -65,16 +65,16 @@
 
 ## 주요 기능
 
-| 기능                     | 설명                                                                                        |
-| ------------------------ | ------------------------------------------------------------------------------------------- |
-| 🎬 세 영화관 지원        | CGV·메가박스·롯데시네마의 공개 예매 정보를 확인합니다.                                      |
-| 🔎 극장 선택과 작품 검색 | 영화관과 지역을 고른 뒤 극장을 선택하고, 애니메이션을 포함한 작품을 제목으로 검색합니다.    |
-| 🗓️ 날짜·포맷별 감시      | 한국 시간 기준 상영일과 모든 포맷·2D·3D·IMAX·4DX·DOLBY·SCREENX 조건을 저장합니다.           |
-| ⏱️ 가장 빠른 회차 알림   | 선택한 날짜와 포맷에서 가장 빠른 예매 가능 미래 회차 한 건을 알려줍니다.                    |
-| 🔔 앱 알림과 디스코드    | 앱 팝업을 먼저 처리하고, 연결한 개인 디스코드 채널에도 알림을 보냅니다.                     |
-| 🖼️ 공식 영화 포스터      | 공식 목록에서 확인한 포스터를 원본 비율로 표시하고, 이미지가 없으면 티켓 배너를 보여줍니다. |
-| 🌙 자동 복귀             | 절전 해제·네트워크 복구 후 감시를 이어가며, 로그인 후 자동 시작을 설정할 수 있습니다.       |
-| 💾 내 기기에 저장        | 감시 조건·설정·알림 기록은 로컬에 저장하고 웹훅은 OS 암호화 저장소로 보호합니다.            |
+| 기능                     | 설명                                                                                                        |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------- |
+| 🎬 세 영화관 지원        | CGV·메가박스·롯데시네마의 공개 예매 정보를 확인합니다.                                                      |
+| 🔎 극장 선택과 작품 검색 | 영화관과 지역을 고른 뒤 극장을 선택하고, 애니메이션을 포함한 작품을 제목으로 검색합니다.                    |
+| 🗓️ 날짜·포맷별 감시      | 한국 시간 기준 상영일과 모든 포맷·2D·3D·IMAX·4DX·DOLBY·SCREENX 조건을 저장합니다.                           |
+| ⏱️ 가장 빠른 회차 알림   | 선택한 날짜와 포맷에서 가장 빠른 예매 가능 미래 회차 한 건을 알려줍니다.                                    |
+| 🔔 앱 알림과 디스코드    | 앱 팝업을 먼저 처리하고, 연결한 개인 디스코드 채널에도 알림을 보냅니다.                                     |
+| 🖼️ 공식 영화 포스터      | 공식 고화질 포스터를 우선 표시하고, 원본 비율을 유지합니다. 이미지를 받을 수 없으면 티켓 배너를 보여줍니다. |
+| 🌙 자동 복귀             | 절전 해제·네트워크 복구 후 감시를 이어가며, 로그인 후 자동 시작을 설정할 수 있습니다.                       |
+| 💾 내 기기에 저장        | 감시 조건·설정·알림 기록은 로컬에 저장하고 웹훅은 OS 암호화 저장소로 보호합니다.                            |
 
 포맷은 해당 영화관이 제공한 회차 정보에서 식별합니다. 목록에 있는 모든 극장이 모든 특별관 포맷을 운영하는 것은 아닙니다.
 
@@ -84,16 +84,16 @@
 
 사용 중인 운영체제의 설치 파일을 선택하세요. Node.js나 개발 도구 설치 없이 앱으로 사용할 수 있습니다.
 
-- **Windows**: [설치 파일(.exe) 다운로드](https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.2.0/Cinema-Bar-0.2.0-Windows-x64-Setup.exe) → [Windows 설치 방법](#windows-앱으로-사용하기)
-- **macOS**: [설치 파일(.dmg) 다운로드](https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.2.0/Cinema-Bar-0.2.0-macOS-arm64.dmg) → [macOS 설치 방법](#macos-앱으로-사용하기)
+- **Windows**: [설치 파일(.exe) 다운로드](https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.2.1/Cinema-Bar-0.2.1-Windows-x64-Setup.exe) → [Windows 설치 방법](#windows-앱으로-사용하기)
+- **macOS**: [설치 파일(.dmg) 다운로드](https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.2.1/Cinema-Bar-0.2.1-macOS-arm64.dmg) → [macOS 설치 방법](#macos-앱으로-사용하기)
 
 ### macOS 앱으로 사용하기
 
 | 다운로드                                                                                                                       | 대상과 용도                                                                         |
 | ------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------- |
-| **[macOS DMG 다운로드](https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.2.0/Cinema-Bar-0.2.0-macOS-arm64.dmg)** | Apple Silicon · macOS 13 이상 · 권장. 앱을 응용 프로그램으로 드래그해서 설치합니다. |
-| [macOS ZIP 다운로드](https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.2.0/Cinema-Bar-0.2.0-macOS-arm64.zip)     | Apple Silicon · macOS 13 이상 · 압축을 풀고 앱을 직접 복사합니다.                   |
-| [SHA256 체크섬](https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.2.0/SHA256SUMS.txt)                            | 릴리스 설치 파일 · 다운로드한 파일의 일치 여부를 확인할 때 사용합니다.              |
+| **[macOS DMG 다운로드](https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.2.1/Cinema-Bar-0.2.1-macOS-arm64.dmg)** | Apple Silicon · macOS 13 이상 · 권장. 앱을 응용 프로그램으로 드래그해서 설치합니다. |
+| [macOS ZIP 다운로드](https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.2.1/Cinema-Bar-0.2.1-macOS-arm64.zip)     | Apple Silicon · macOS 13 이상 · 압축을 풀고 앱을 직접 복사합니다.                   |
+| [SHA256 체크섬](https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.2.1/SHA256SUMS.txt)                            | 릴리스 설치 파일 · 다운로드한 파일의 일치 여부를 확인할 때 사용합니다.              |
 
 **DMG 설치 순서**
 
@@ -126,14 +126,14 @@ ZIP을 선택했다면 압축을 풀고 **Cinema Bar.app**을 응용 프로그�
 
 | 다운로드                                                                                                                                 | 대상과 용도                                                 |
 | ---------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
-| **[Windows Setup 다운로드](https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.2.0/Cinema-Bar-0.2.0-Windows-x64-Setup.exe)** | Windows 10/11 · x64 · 권장. 현재 사용자에게 설치합니다.     |
-| [Windows ZIP 다운로드](https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.2.0/Cinema-Bar-0.2.0-Windows-x64.zip)             | Windows 10/11 · x64 · 압축을 풀어 직접 실행하는 대안입니다. |
+| **[Windows Setup 다운로드](https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.2.1/Cinema-Bar-0.2.1-Windows-x64-Setup.exe)** | Windows 10/11 · x64 · 권장. 현재 사용자에게 설치합니다.     |
+| [Windows ZIP 다운로드](https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.2.1/Cinema-Bar-0.2.1-Windows-x64.zip)             | Windows 10/11 · x64 · 압축을 풀어 직접 실행하는 대안입니다. |
 
 1. **Windows Setup 다운로드**로 받은 파일을 실행합니다. 관리자 권한 없이 `%LOCALAPPDATA%\Programs\Cinema Bar`에 설치합니다.
 2. 바탕 화면 바로가기는 설치 중 선택할 수 있습니다. 설치를 마친 뒤 **시작 메뉴 → Cinema Bar**로 실행합니다.
 3. 작업 표시줄의 알림 영역에서 영사기 아이콘을 누릅니다. 숨겨진 아이콘 목록도 확인하세요. **감시 목록 → ＋ 추가**에서 첫 감시를 저장하고, 필요하면 자신의 Discord 웹훅을 연결합니다.
 
-ZIP을 선택했다면 쓰기 가능한 폴더에 전체 압축을 풀고 **Cinema Bar.exe**를 실행하세요. EXE와 함께 있는 `resources` 등 다른 파일도 필요합니다. 새 사용자는 빈 감시 목록과 연결되지 않은 웹훅으로 시작합니다. 위의 공통 [SHA256 체크섬](https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.2.0/SHA256SUMS.txt)으로 다운로드한 파일을 확인할 수 있습니다.
+ZIP을 선택했다면 쓰기 가능한 폴더에 전체 압축을 풀고 **Cinema Bar.exe**를 실행하세요. EXE와 함께 있는 `resources` 등 다른 파일도 필요합니다. 새 사용자는 빈 감시 목록과 연결되지 않은 웹훅으로 시작합니다. 위의 공통 [SHA256 체크섬](https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.2.1/SHA256SUMS.txt)으로 다운로드한 파일을 확인할 수 있습니다.
 
 Windows 설치 파일과 앱은 **코드 서명되지 않았습니다**. Windows가 경고를 표시할 수 있으므로 다운로드 출처와 체크섬을 확인하세요.
 
@@ -153,7 +153,7 @@ Windows 빌드와 설치·정상 첫 실행·114개 desktop smoke 검사·동일
 
 ### 앱에서 업데이트하기
 
-**0.1.0 사용자는 위의 0.2.0 설치 파일을 한 번 직접 받아 설치하세요.** 0.2.0부터 **설정 → 앱 업데이트**에서 실행 중인 버전과 새 정식 릴리스를 확인할 수 있습니다. 최신 릴리스가 현재 버전과 같으면 최신 상태로 표시합니다.
+**0.1.0 사용자는 위의 0.2.1 설치 파일을 한 번 직접 받아 설치하세요.** 0.2.0부터 **설정 → 앱 업데이트**에서 실행 중인 버전과 새 정식 릴리스를 확인할 수 있습니다. 최신 릴리스가 현재 버전과 같으면 최신 상태로 표시합니다.
 
 1. **업데이트 확인**을 누르고 새 버전이 있으면 **업데이트 다운로드**를 선택합니다. 진행률을 확인하거나 **다운로드 취소**로 중단할 수 있습니다.
 2. 다운로드와 SHA256 검증이 끝나면 **설치 파일 열기**를 누릅니다. 열기에 실패하면 감시는 계속되며 같은 파일의 열기를 다시 시도할 수 있습니다.

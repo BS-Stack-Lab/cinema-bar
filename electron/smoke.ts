@@ -1,4 +1,12 @@
-import { mkdir, writeFile, readFile } from 'node:fs/promises';
+import { mkdir, writeFile, readFile, readdir, lstat } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import {
+  UpdateManager,
+  createUpdateQuitHandler,
+  updateIo,
+  type UpdateOptions,
+  type UpdateClock,
+} from './updates.js';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { spawn, execFileSync } from 'node:child_process';
 import path from 'node:path';
@@ -15,6 +23,7 @@ import { createTrayIcon } from './trayIcon.js';
 import { koreanToday } from './validation.js';
 import type { SecretCodec } from './secretStore.js';
 import type { TraySample } from './trayVisibility.js';
+import { validateIpc, validateSender } from './ipc.js';
 
 export function createSmokeRuntime(app: App) {
   assert.equal(process.env.CINEMA_SMOKE, '1');
@@ -24,6 +33,74 @@ export function createSmokeRuntime(app: App) {
   assert.equal(app.getPath('userData'), profile);
   const output = process.env.CINEMA_SMOKE_OUTPUT;
   assert.ok(output);
+  const downloadsPath = path.join(profile, 'Downloads');
+  mkdirSync(downloadsPath, { recursive: true });
+  const updateBytes = Buffer.from('Cinema Bar isolated updater fixture');
+  const installerName = `Cinema-Bar-0.3.0-${process.platform === 'darwin' ? 'macOS-arm64.dmg' : 'Windows-x64-Setup.exe'}`;
+  const updateObservations = {
+    metadataCalls: 0,
+    downloadCalls: 0,
+    openerCalls: [] as string[],
+    failOpen: true,
+    hangDownload: false,
+  };
+  const updateIsolation = {
+    mockTransport: true,
+    mockOpener: true,
+    mockQuit: true,
+    realUpdateNetworkCalls: 0,
+    realInstallerOpens: 0,
+    updaterQuitRequests: 0,
+    downloadsPath,
+    metadataPath: path.join(profile, 'update-check.json'),
+  };
+  const updateOptions: UpdateOptions = {
+    currentVersion: app.getVersion(),
+    platform: process.platform,
+    arch: process.arch,
+    isPackaged: true,
+    userDataPath: profile,
+    downloadsPath,
+    fetch: async (input) => {
+      const url = String(input);
+      if (url === 'https://api.github.com/repos/BS-Stack-Lab/cinema-bar/releases/latest') {
+        updateObservations.metadataCalls++;
+        return Response.json({
+          tag_name: 'v0.3.0',
+          draft: false,
+          prerelease: false,
+          assets: [
+            {
+              id: 1,
+              state: 'uploaded',
+              name: installerName,
+              size: updateBytes.length,
+              digest: `sha256:${createHash('sha256').update(updateBytes).digest('hex')}`,
+              browser_download_url: `https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.3.0/${installerName}`,
+            },
+          ],
+        });
+      }
+      assert.equal(
+        url,
+        `https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.3.0/${installerName}`,
+      );
+      updateObservations.downloadCalls++;
+      if (updateObservations.hangDownload)
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(updateBytes.subarray(0, 2));
+            },
+          }),
+        );
+      return new Response(updateBytes);
+    },
+    openPath: async (file) => {
+      updateObservations.openerCalls.push(file);
+      return updateObservations.failOpen ? 'fixture open rejection' : '';
+    },
+  };
   const values = new Map<string, string>();
   const codecEvidence = { kind: 'in-memory', availabilityChecks: 0, encrypts: 0, decrypts: 0 };
   const codec: SecretCodec = {
@@ -78,11 +155,20 @@ export function createSmokeRuntime(app: App) {
     );
     return identity;
   };
-  return { codec, codecEvidence, recordIdentity };
+  return {
+    codec,
+    codecEvidence,
+    recordIdentity,
+    updateOptions,
+    updateBytes,
+    updateObservations,
+    updateIsolation,
+  };
 }
 
 interface SmokeContext {
   app: App;
+  updates: UpdateManager;
   window: BrowserWindow;
   tray: Tray;
   toggleWindow(): void;
@@ -116,6 +202,7 @@ export async function runSmoke({
   popups,
   power,
   smokeRuntime,
+  updates,
 }: SmokeContext) {
   const output = process.env.CINEMA_SMOKE_OUTPUT!;
   const actions: { name: string; passed: boolean; detail?: unknown }[] = [];
@@ -130,6 +217,420 @@ export async function runSmoke({
       await new Promise((resolve) => setTimeout(resolve, 30));
     }
     throw new Error(`UI condition did not settle: ${code}`);
+  };
+  const runUpdateSmoke = async () => {
+    const runtime = smokeRuntime;
+    const observations = runtime.updateObservations;
+    const flush = async () => {
+      for (let i = 0; i < 12; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+    };
+    const until = async (condition: () => boolean) => {
+      for (let i = 0; i < 200; i++) {
+        if (condition()) return;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      throw new Error('Updater fixture did not settle');
+    };
+    const deferred = () => {
+      let resolve!: () => void;
+      const promise = new Promise<void>((yes) => {
+        resolve = yes;
+      });
+      return { promise, resolve };
+    };
+    const fakeClock = () => {
+      let now = Date.now();
+      let id = 0;
+      const timers = new Map<number, { at: number; callback: () => void }>();
+      const clock: UpdateClock = {
+        now: () => now,
+        setTimeout(callback, delay) {
+          const key = ++id;
+          timers.set(key, { at: now + delay, callback });
+          return key;
+        },
+        clearTimeout(timer) {
+          timers.delete(timer as number);
+        },
+      };
+      return {
+        clock,
+        advance(milliseconds: number) {
+          now += milliseconds;
+          for (const [key, timer] of [...timers])
+            if (timer.at <= now) {
+              timers.delete(key);
+              timer.callback();
+            }
+        },
+      };
+    };
+    const isolated = async (tag: string, patch: Partial<UpdateOptions> = {}) => {
+      const directory = path.join(store.directory, `update-fixture-${tag}`);
+      const downloadsPath = path.join(directory, 'Downloads');
+      await mkdir(downloadsPath, { recursive: true });
+      const options = {
+        ...runtime.updateOptions,
+        userDataPath: directory,
+        downloadsPath,
+        ...patch,
+      };
+      return { manager: new UpdateManager(options), options, directory, downloadsPath };
+    };
+    await ui(
+      "Array.from(document.querySelectorAll('[role=tab]')).find(x=>x.textContent==='설정').click()",
+    );
+    await waitFor('!!document.querySelector(".updateCard")');
+    const initial = await ui<{ currentVersion: string; phase: string }>(
+      'window.cinema.getUpdateState()',
+    );
+    check(
+      'update-state-current-version',
+      initial.currentVersion === app.getVersion() &&
+        initial.phase === 'idle' &&
+        (await ui(
+          `document.querySelector('.updateCard').textContent.includes(${JSON.stringify(app.getVersion())})`,
+        )),
+      initial,
+    );
+    const available = await ui<{ phase: string; availableVersion: string; platformLabel: string }>(
+      'window.cinema.checkForUpdates()',
+    );
+    check(
+      'update-check-stable-platform',
+      available.phase === 'available' &&
+        available.availableVersion === '0.3.0' &&
+        available.platformLabel.includes(process.platform === 'darwin' ? 'DMG' : 'Setup'),
+      { ...available, metadataCalls: observations.metadataCalls },
+    );
+    await ui('window.cinema.downloadUpdate()');
+    const [folder] = await readdir(runtime.updateIsolation.downloadsPath);
+    const [installer] = await readdir(path.join(runtime.updateIsolation.downloadsPath, folder));
+    const readyFile = path.join(runtime.updateIsolation.downloadsPath, folder, installer);
+    const readyBytes = await readFile(readyFile);
+    check(
+      'update-download-hash-ready',
+      updates.snapshot().phase === 'ready' &&
+        readyBytes.equals(runtime.updateBytes) &&
+        !installer.endsWith('.part') &&
+        (process.platform === 'win32' || ((await lstat(readyFile)).mode & 0o777) === 0o600),
+      {
+        state: updates.snapshot(),
+        sha256: createHash('sha256').update(readyBytes).digest('hex'),
+        bytes: readyBytes.length,
+        file: readyFile,
+      },
+    );
+    observations.hangDownload = true;
+    const canceled = await isolated('cancel');
+    await canceled.manager.check();
+    const canceledJob = canceled.manager.download();
+    await until(() => canceled.manager.snapshot().downloadedBytes === 2);
+    await canceled.manager.cancel();
+    await canceledJob;
+    observations.hangDownload = false;
+    const remaining = await readdir(canceled.downloadsPath);
+    check(
+      'update-download-cancel-cleans-partial',
+      canceled.manager.snapshot().phase === 'available' && remaining.length === 0,
+      { phase: canceled.manager.snapshot().phase, remaining },
+    );
+    await canceled.manager.dispose();
+    const engineWasStarted = engine.isStarted;
+    await ui('window.cinema.openUpdateInstaller()');
+    check(
+      'update-installer-open-failure-keeps-running',
+      updates.snapshot().phase === 'ready' &&
+        engine.isStarted === engineWasStarted &&
+        (await readFile(readyFile)).equals(runtime.updateBytes),
+      {
+        phase: updates.snapshot().phase,
+        engineWasStarted,
+        engineStillStarted: engine.isStarted,
+        openerCalls: observations.openerCalls.length,
+      },
+    );
+    const beforeRetry = observations.downloadCalls;
+    observations.failOpen = false;
+    await ui('window.cinema.openUpdateInstaller()');
+    check(
+      'update-installer-open-retry-no-redownload',
+      updates.snapshot().phase === 'opened' &&
+        observations.downloadCalls === beforeRetry &&
+        observations.openerCalls.length === 2 &&
+        observations.openerCalls.every((file) => file === readyFile),
+      {
+        phase: updates.snapshot().phase,
+        downloadsBefore: beforeRetry,
+        downloadsAfter: observations.downloadCalls,
+        openedPaths: observations.openerCalls,
+      },
+    );
+    const payloads = [
+      { url: 'https://evil.example' },
+      { path: '/tmp/arbitrary' },
+      { assetId: 99 },
+      null,
+    ];
+    const channels = [
+      'getUpdateState',
+      'checkForUpdates',
+      'downloadUpdate',
+      'cancelUpdate',
+      'openUpdateInstaller',
+    ];
+    let rejected = 0;
+    for (const channel of channels)
+      for (const payload of payloads) {
+        assert.throws(() => validateIpc(channel, payload));
+        rejected++;
+      }
+    assert.throws(() => validateSender({}, {}, 'file:///foreign', 'file:///owned'));
+    check(
+      'update-ipc-rejects-payload',
+      rejected === 20 && channels.every((channel) => validateIpc(channel, undefined) === undefined),
+      { channels, rejected, senderRejected: true },
+    );
+    const bounds = window.getBounds();
+    const layouts = [];
+    for (const width of [340, 440]) {
+      window.setBounds({ ...bounds, width });
+      const layout = await ui<{ fits: boolean; live: boolean; button: string }>(
+        `(() => { const card = document.querySelector('.updateCard'); const rect = card.getBoundingClientRect(); const buttons = Array.from(card.querySelectorAll('button')); return { fits: buttons.every(button => {const b=button.getBoundingClientRect();return b.left>=rect.left&&b.right<=rect.right&&b.width>0}),live:!!card.querySelector('[role=status][aria-live=polite]'),button:buttons[0].textContent }; })()`,
+      );
+      assert.ok(layout.fits && layout.live && layout.button.includes('다시 열기'));
+      layouts.push({ width, ...layout });
+    }
+    window.setBounds(bounds);
+    check(
+      'update-isolation-no-real-side-effects',
+      runtime.updateIsolation.realUpdateNetworkCalls === 0 &&
+        runtime.updateIsolation.realInstallerOpens === 0 &&
+        runtime.updateIsolation.updaterQuitRequests === 0 &&
+        runtime.updateIsolation.downloadsPath.startsWith(`${store.directory}${path.sep}`) &&
+        runtime.updateIsolation.metadataPath === path.join(store.directory, 'update-check.json') &&
+        runtime.updateOptions.fetch !== fetch,
+      { ...runtime.updateIsolation, layouts },
+    );
+    let cooldownCalls = 0;
+    const cooldown = await isolated('cooldown', {
+      fetch: async () => {
+        cooldownCalls++;
+        return new Response(null, { status: 429, headers: { 'retry-after': '172800' } });
+      },
+    });
+    await cooldown.manager.check();
+    const cooldownRecord = JSON.parse(await readFile(cooldown.manager.metadataPath, 'utf8'));
+    await cooldown.manager.dispose();
+    const restarted = new UpdateManager(cooldown.options);
+    await restarted.check();
+    check(
+      'update-cooldown-survives-manager-restart',
+      cooldownCalls === 1 &&
+        restarted.snapshot().nextCheckAllowedAt === cooldownRecord.githubBlockedUntil &&
+        cooldownRecord.githubBlockedUntil > Date.now() + 24 * 3_600_000,
+      { calls: cooldownCalls, record: cooldownRecord, state: restarted.snapshot() },
+    );
+    await restarted.dispose();
+    let invalidMetadataCalls = 0;
+    const invalid = await isolated('metadata', {
+      fetch: async () => {
+        invalidMetadataCalls++;
+        throw new Error('must never fetch');
+      },
+    });
+    await writeFile(invalid.manager.metadataPath, '{');
+    await writeFile(path.join(invalid.directory, 'state.json'), 'existing-user-state');
+    await invalid.manager.initialize();
+    const initialError = invalid.manager.snapshot().phase;
+    await invalid.manager.check();
+    const recoveryRecord = JSON.parse(await readFile(invalid.manager.metadataPath, 'utf8'));
+    check(
+      'update-metadata-failure-blocks-network',
+      initialError === 'error' &&
+        invalidMetadataCalls === 0 &&
+        recoveryRecord.githubBlockedUntil > Date.now() + 23 * 3_600_000 &&
+        (await readFile(path.join(invalid.directory, 'state.json'), 'utf8')) ===
+          'existing-user-state',
+      {
+        initialError,
+        calls: invalidMetadataCalls,
+        record: recoveryRecord,
+        existingDataPreserved: true,
+      },
+    );
+    await invalid.manager.dispose();
+    const quitFixture = async (
+      tag: string,
+      operation: 'write' | 'close' | 'rm',
+      deadline: boolean,
+      cleanupError = false,
+    ) => {
+      const reached = deferred();
+      const releaseIo = deferred();
+      const order: string[] = [];
+      const time = fakeClock();
+      let quits = 0;
+      let prevented = 0;
+      const item = await isolated(tag, {
+        clock: time.clock,
+        io: {
+          ...updateIo,
+          open: async (file, flags, mode) => {
+            const handle = await updateIo.open(file, flags, mode);
+            if (!file.endsWith('.part')) return handle;
+            return {
+              stat: () => handle.stat(),
+              read: (...args) => handle.read(...args),
+              sync: () => handle.sync(),
+              write: async (...args) => {
+                if (operation === 'write') {
+                  order.push('write-wait');
+                  reached.resolve();
+                  await releaseIo.promise;
+                }
+                return handle.write(...args);
+              },
+              close: async () => {
+                if (operation === 'close') {
+                  order.push('close-wait');
+                  reached.resolve();
+                  await releaseIo.promise;
+                }
+                await handle.close();
+                order.push('closed');
+              },
+            };
+          },
+          rm: async (file, options) => {
+            if (file.endsWith('.part')) {
+              if (operation === 'rm') {
+                order.push('rm-wait');
+                reached.resolve();
+                await releaseIo.promise;
+              }
+              if (cleanupError) {
+                order.push('rm-rejected');
+                throw new Error('fixture cleanup denied');
+              }
+            }
+            await updateIo.rm(file, options);
+            if (file.endsWith('.part')) order.push('removed');
+          },
+        },
+      });
+      await item.manager.check();
+      if (operation === 'rm') observations.hangDownload = true;
+      const job = item.manager.download();
+      if (operation === 'rm') {
+        await until(() => item.manager.snapshot().downloadedBytes === 2);
+        void item.manager.cancel();
+      }
+      await reached.promise;
+      observations.hangDownload = false;
+      const handleQuit = createUpdateQuitHandler({
+        clock: time.clock,
+        hasActiveIo: () => item.manager.hasActiveIo,
+        dispose: () => item.manager.dispose(),
+        stop: () => order.push('monitoring-stopped'),
+        continueQuit: () => {
+          quits++;
+          order.push('quit-continuation');
+        },
+      });
+      assert.equal(quits, 0);
+      handleQuit({
+        preventDefault: () => {
+          prevented++;
+        },
+      });
+      handleQuit({
+        preventDefault: () => {
+          prevented++;
+        },
+      });
+      await flush();
+      let beforeDeadline = 0;
+      if (deadline) {
+        time.advance(4999);
+        beforeDeadline = quits;
+        assert.equal(quits, 0);
+        time.advance(1);
+        assert.equal(quits, 1);
+      }
+      releaseIo.resolve();
+      await job;
+      await flush();
+      time.advance(5000);
+      handleQuit({
+        preventDefault: () => {
+          prevented++;
+        },
+      });
+      assert.equal(quits, 1);
+      assert.equal(prevented, 2);
+      assert.ok(order.indexOf('monitoring-stopped') < order.indexOf('quit-continuation'));
+      if (!cleanupError) assert.ok(order.indexOf('closed') < order.indexOf('removed'));
+      if (!deadline && !cleanupError)
+        assert.ok(order.indexOf('removed') < order.indexOf('quit-continuation'));
+      const folders = await readdir(item.downloadsPath);
+      const files = (
+        await Promise.all(folders.map((folder) => readdir(path.join(item.downloadsPath, folder))))
+      ).flat();
+      return {
+        operation,
+        beforeDeadline,
+        deadlineMilliseconds: deadline ? 5000 : undefined,
+        quitContinuations: quits,
+        prevented,
+        order,
+        remainingFiles: files,
+      };
+    };
+    const cleanupOrder = await quitFixture('quit-order', 'write', false);
+    check(
+      'update-user-quit-cleanup-order',
+      cleanupOrder.quitContinuations === 1 && cleanupOrder.remainingFiles.length === 0,
+      cleanupOrder,
+    );
+    const deadlines = [];
+    for (const operation of ['write', 'close', 'rm'] as const)
+      deadlines.push(await quitFixture(`quit-deadline-${operation}`, operation, true));
+    check(
+      'update-user-quit-deadline-once',
+      deadlines.length === 3 &&
+        deadlines.every(
+          (item) =>
+            item.beforeDeadline === 0 &&
+            item.quitContinuations === 1 &&
+            item.deadlineMilliseconds === 5000,
+        ),
+      deadlines,
+    );
+    const cleanupError = await quitFixture('quit-error', 'write', false, true);
+    check(
+      'update-quit-cleanup-error-continues',
+      cleanupError.quitContinuations === 1 &&
+        cleanupError.order.includes('rm-rejected') &&
+        cleanupError.remainingFiles.some((file) => file.endsWith('.part')),
+      cleanupError,
+    );
+    await updates.dispose();
+    check(
+      'update-handed-off-file-retained',
+      (await readFile(readyFile)).equals(runtime.updateBytes) &&
+        updates.snapshot().phase === 'opened' &&
+        runtime.updateIsolation.updaterQuitRequests === 0,
+      {
+        file: readyFile,
+        retained: true,
+        phase: updates.snapshot().phase,
+        updaterQuitRequests: runtime.updateIsolation.updaterQuitRequests,
+      },
+    );
+    await ui(
+      "Array.from(document.querySelectorAll('[role=tab]')).find(x=>x.textContent==='대시보드').click()",
+    );
   };
   try {
     await mkdir(output, { recursive: true });
@@ -185,7 +686,7 @@ export async function runSmoke({
     check(
       'renderer-narrow-api',
       await ui(
-        'typeof require === "undefined" && typeof process === "undefined" && !window.cinema.invoke && !window.cinema.ipcRenderer && Object.keys(window.cinema).length===16',
+        'typeof require === "undefined" && typeof process === "undefined" && !window.cinema.invoke && !window.cinema.ipcRenderer && Object.keys(window.cinema).length===22',
       ),
     );
     window.webContents.debugger.attach('1.3');
@@ -1308,6 +1809,7 @@ export async function runSmoke({
         2,
       ),
     );
+    await runUpdateSmoke();
     const image = await window.webContents.capturePage();
     await writeFile(path.join(output, 'desktop.png'), image.toPNG());
     check('capturePage-real-electron', !image.isEmpty(), image.getSize());
@@ -1323,6 +1825,7 @@ export async function runSmoke({
           isPackaged: app.isPackaged,
           platform: process.platform,
           isolatedUserData: store.directory,
+          updateIsolation: smokeRuntime.updateIsolation,
           mockProviders: true,
           mockDiscord: true,
           realDiscordSends: 0,

@@ -1,4 +1,5 @@
 import { status } from './status';
+import { UpdateCard } from './UpdateCard';
 import { useCallback, useEffect, useState, useSyncExternalStore, type FormEvent } from 'react';
 import { flushSync } from 'react-dom';
 import {
@@ -419,6 +420,7 @@ export default function App() {
           <>
             <div className="sectionTitle">
               <h2>내 연결과 실행</h2>
+              <UpdateCard />
               <span>이 기기에만 저장</span>
             </div>
             <div className="card settingsCard">

@@ -833,3 +833,26 @@ describe('catalog movie identity roundtrip', () => {
     expect(form.get('brchNo1')).toBe('4121');
   });
 });
+
+describe('updater IPC boundary', () => {
+  it.each([
+    'getUpdateState',
+    'checkForUpdates',
+    'downloadUpdate',
+    'cancelUpdate',
+    'openUpdateInstaller',
+  ])('accepts only no-payload %s requests', (channel) => {
+    expect(validateIpc(channel, undefined)).toBeUndefined();
+    for (const payload of [
+      null,
+      {},
+      { url: 'https://evil.example' },
+      { path: '/tmp/installer' },
+      { assetId: 1 },
+      'install',
+      true,
+    ])
+      expect(() => validateIpc(channel, payload)).toThrow('입력이 필요하지 않습니다');
+    expect(() => validateSender({}, {}, 'file:///evil', 'file:///app')).toThrow();
+  });
+});

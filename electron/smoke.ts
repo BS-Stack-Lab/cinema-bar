@@ -750,7 +750,9 @@ export async function runSmoke({
     const alphaPixels = [...bitmap].filter((value, index) => index % 4 === 3 && value > 0).length;
     check(
       'tray-valid-template-bitmap',
-      !icon.isEmpty() && icon.isTemplateImage() && alphaPixels > 0,
+      !icon.isEmpty() &&
+        (process.platform !== 'darwin' || icon.isTemplateImage()) &&
+        alphaPixels > 0,
       { size: icon.getSize(), alphaPixels },
     );
     check('tray-CB-identity', process.platform !== 'darwin' || tray.getTitle() === 'CB');

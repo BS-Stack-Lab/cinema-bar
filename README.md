@@ -6,7 +6,15 @@
     CGV · 메가박스 · 롯데시네마<br />
     원하는 극장과 작품을 저장하면 앱과 디스코드로 알려주는 개인 설치형 알리미
   </p>
-  <p><code>내 컴퓨터에서 실행</code> <code>개인 웹훅 연결</code> <code>macOS 우선 검증</code></p>
+  <p><code>내 컴퓨터에서 실행</code> <code>개인 웹훅 연결</code> <code>macOS · Windows</code></p>
+  <p>
+    <a href="https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.1.0/Cinema-Bar-0.1.0-macOS-arm64.dmg"><strong> macOS 설치 파일 다운로드</strong></a><br />
+    v0.1.0 · Apple Silicon(M1 이상) · macOS 13 이상
+  </p>
+  <p>
+    <a href="https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.1.0/Cinema-Bar-0.1.0-Windows-x64-Setup.exe"><strong>Windows 설치 파일 다운로드</strong></a><br />
+    v0.1.0 · Windows 10/11 · x64
+  </p>
   <p>
     <a href="#주요-기능">주요 기능</a> ·
     <a href="#설치와-실행">설치와 실행</a> ·
@@ -52,12 +60,69 @@
 
 ### macOS 앱으로 사용하기
 
-1. 전달받은 macOS 앱 ZIP을 압축 해제합니다.
-2. **Cinema Bar.app**을 **응용 프로그램** 폴더로 옮깁니다.
-3. 앱을 실행하고 상단 메뉴바의 **영사기 / CB** 아이콘을 누릅니다.
-4. **감시 목록 → ＋ 추가**에서 첫 감시를 저장합니다.
+Node.js나 개발 도구 설치 없이 사용할 수 있습니다. **[GitHub Releases](https://github.com/BS-Stack-Lab/cinema-bar/releases/latest)**에서 설치 파일을 받으세요.
 
-현재 패키지는 서명·공증 전의 로컬 빌드입니다. 배포 파일은 본인이 빌드했거나 출처를 확인한 파일을 사용하세요. 실기기 검증은 macOS Apple Silicon에서 진행했습니다. Windows·Linux는 추가 실기기 검증이 필요합니다.
+| 다운로드                                                                                                                       | 대상                          | 용도                                                |
+| ------------------------------------------------------------------------------------------------------------------------------ | ----------------------------- | --------------------------------------------------- |
+| **[macOS DMG 다운로드](https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.1.0/Cinema-Bar-0.1.0-macOS-arm64.dmg)** | Apple Silicon · macOS 13 이상 | 권장. 앱을 응용 프로그램으로 드래그해서 설치합니다. |
+| [macOS ZIP 다운로드](https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.1.0/Cinema-Bar-0.1.0-macOS-arm64.zip)     | Apple Silicon · macOS 13 이상 | 압축을 풀고 앱을 직접 복사합니다.                   |
+| [SHA256 체크섬](https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.1.0/SHA256SUMS.txt)                            | 릴리스 설치 파일              | 다운로드한 파일의 일치 여부를 확인할 때 사용합니다. |
+
+**DMG 설치 순서**
+
+1. **macOS DMG 다운로드**를 눌러 파일을 받습니다.
+2. 다운로드한 `.dmg`를 열고 **Cinema Bar.app**을 옆의 **Applications(응용 프로그램)**으로 드래그합니다.
+3. 복사가 끝나면 디스크 이미지를 추출하고, **응용 프로그램 → Cinema Bar**를 실행합니다.
+4. 상단 메뉴바의 **영사기 / CB** 아이콘을 누릅니다. 아이콘이 보이지 않으면 Dock에서 앱을 엽니다.
+5. **감시 목록 → ＋ 추가**에서 극장·작품·날짜를 저장합니다.
+6. 디스코드 알림도 받으려면 **설정 → Discord 연결**에서 자신의 웹훅을 연결합니다.
+
+ZIP을 선택했다면 압축을 풀고 **Cinema Bar.app**을 응용 프로그램 폴더에 복사한 뒤 3번부터 진행하세요. 각 사용자에게 빈 감시 목록으로 시작하며, 배포 파일에는 제작자의 감시 설정이나 웹훅이 들어 있지 않습니다.
+
+**첫 실행에서 macOS가 앱을 차단하는 경우**
+
+현재 배포본은 로컬 임시 서명(ad-hoc)을 사용하며 **Apple Developer ID 서명·공증 전**입니다. 따라서 다운로드 후 첫 실행이 차단될 수 있습니다. 이 저장소에서 받은 파일임을 확인한 뒤 앱을 한 번 실행하고, **시스템 설정 → 개인정보 보호 및 보안 → 그래도 열기**로 허용하세요. 자세한 절차는 [Apple의 앱 실행 안내](https://support.apple.com/ko-kr/102445)를 참고하세요.
+
+공개된 macOS 설치 파일은 **Apple Silicon(M1 이상)**용입니다. Intel Mac과 Linux용 설치 파일은 이번 릴리스에 포함하지 않습니다.
+
+**기존 사용자 업데이트**
+
+실행 중인 Cinema Bar를 **앱 종료**로 끝낸 뒤 응용 프로그램 폴더의 앱만 교체하세요. 아래의 사용자 데이터 폴더는 그대로 두면 감시·설정·웹훅·알림 기록을 이어서 사용할 수 있습니다.
+
+```text
+~/Library/Application Support/Cinema Bar/
+```
+
+제거하려면 **설정 → 로그인 후 자동 시작**을 끄고 **앱 종료**를 누른 뒤 응용 프로그램 폴더의 Cinema Bar를 휴지통으로 옮기세요. 위 사용자 데이터 폴더는 유지됩니다.
+
+### Windows 앱으로 사용하기
+
+| 다운로드                                                                                                                                 | 대상                | 용도                                  |
+| ---------------------------------------------------------------------------------------------------------------------------------------- | ------------------- | ------------------------------------- |
+| **[Windows Setup 다운로드](https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.1.0/Cinema-Bar-0.1.0-Windows-x64-Setup.exe)** | Windows 10/11 · x64 | 권장. 현재 사용자에게 설치합니다.     |
+| [Windows ZIP 다운로드](https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.1.0/Cinema-Bar-0.1.0-Windows-x64.zip)             | Windows 10/11 · x64 | 압축을 풀어 직접 실행하는 대안입니다. |
+
+1. **Windows Setup 다운로드**로 받은 파일을 실행합니다. 관리자 권한 없이 `%LOCALAPPDATA%\Programs\Cinema Bar`에 설치합니다.
+2. 바탕 화면 바로가기는 설치 중 선택할 수 있습니다. 설치를 마친 뒤 **시작 메뉴 → Cinema Bar**로 실행합니다.
+3. 작업 표시줄의 알림 영역에서 영사기 아이콘을 누릅니다. 숨겨진 아이콘 목록도 확인하세요. **감시 목록 → ＋ 추가**에서 첫 감시를 저장하고, 필요하면 자신의 Discord 웹훅을 연결합니다.
+
+ZIP을 선택했다면 쓰기 가능한 폴더에 전체 압축을 풀고 **Cinema Bar.exe**를 실행하세요. EXE와 함께 있는 `resources` 등 다른 파일도 필요합니다. 새 사용자는 빈 감시 목록과 연결되지 않은 웹훅으로 시작합니다. 위의 공통 [SHA256 체크섬](https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.1.0/SHA256SUMS.txt)으로 다운로드한 파일을 확인할 수 있습니다.
+
+Windows 설치 파일과 앱은 **코드 서명되지 않았습니다**. Windows가 경고를 표시할 수 있으므로 다운로드 출처와 체크섬을 확인하세요.
+
+**업데이트와 제거**
+
+실행 중인 앱을 **앱 종료**로 끝낸 뒤 새 Setup 파일을 실행해 같은 위치에 설치하세요. ZIP은 앱 종료 후 새 압축의 전체 파일로 교체합니다. 자동 업데이트는 제공하지 않습니다. 제거할 때는 먼저 앱의 **설정 → 로그인 후 자동 시작**을 끄고 **앱 종료**를 누른 뒤 **Windows 설정 → 앱 → 설치된 앱(또는 앱 및 기능) → Cinema Bar → 제거**를 사용하세요. ZIP은 종료 후 압축을 풀었던 폴더를 삭제합니다.
+
+설치·재설치·제거는 아래 사용자 데이터를 유지합니다. 감시·설정·암호화된 웹훅·기록을 계속 사용하려면 이 폴더를 보관하세요. 재설치할 때 지울 필요가 없습니다.
+
+```text
+%APPDATA%\Cinema Bar\
+```
+
+**배포 검증 환경**
+
+Windows 빌드와 설치·정상 첫 실행·100개 desktop smoke 검사·동일 버전 재설치·제거 검증은 GitHub의 **Windows Server 2025 x64 runner**에서 수행합니다. Windows 10/11 실제 기기의 GUI, SmartScreen 평판, 재부팅 후 자동 시작, 개인 OS 암호화 저장소와 실제 영화관 조회·Discord 전송은 이 자동 검사 범위에 포함하지 않습니다. macOS는 Apple Silicon에서 별도 네이티브 검증하며, macOS 전용 Dock 검사 7개를 더 포함합니다.
 
 ### 소스에서 직접 실행하기
 
@@ -80,7 +145,7 @@ npm run build
 release/Cinema Bar-darwin-arm64/Cinema Bar.app
 ```
 
-Intel Mac에서는 경로의 아키텍처가 `x64`입니다. 로그인 후 자동 시작은 패키지로 설치한 앱에서 설정합니다.
+Windows x64에서는 `release/Cinema Bar-win32-x64/Cinema Bar.exe`가 생성됩니다. Windows 설치 파일을 만들려면 Inno Setup 6으로 `scripts/windowsInstaller.iss`를 컴파일하며, 저장소의 Windows workflow가 빌드부터 설치 검증까지 실행합니다. 로그인 후 자동 시작은 패키지로 설치한 앱에서 설정합니다.
 
 <br>
 

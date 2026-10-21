@@ -23,7 +23,14 @@ const originalBundle = path.resolve(`release/Cinema Bar-darwin-${process.arch}/C
 let executable =
   process.platform === 'darwin'
     ? path.join(originalBundle, 'Contents/MacOS/Cinema Bar')
-    : `release/Cinema Bar-${process.platform}-${process.arch}/Cinema Bar`;
+    : path.join(
+        `release/Cinema Bar-${process.platform}-${process.arch}`,
+        process.platform === 'win32' ? 'Cinema Bar.exe' : 'Cinema Bar',
+      );
+if (process.env.CINEMA_SMOKE_EXECUTABLE) {
+  assert.notEqual(process.platform, 'darwin', 'macOS smoke requires an isolated app identity');
+  executable = path.resolve(process.env.CINEMA_SMOKE_EXECUTABLE);
+}
 const startedAt = new Date().toISOString();
 const execute = promisify(execFile);
 const canonicalId = 'dev.cinemabar.desktop';

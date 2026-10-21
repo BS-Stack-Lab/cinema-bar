@@ -180,31 +180,6 @@ Cinema Bar는 예매 가능한 회차를 확인해 알림을 보냅니다. 실�
 
 웹훅은 Electron `safeStorage`로 암호화합니다. OS 암호화 저장소에 연결할 수 없으면 디스코드 연결 저장·전송이 제한되며, 앱 팝업은 별도로 사용할 수 있습니다.
 
-## 개발과 검증
-
-**Electron + React + TypeScript + Vite**로 구성되어 있습니다. 영화관 조회·알림·로컬 저장은 Electron에서, 관리 화면은 React에서 실행합니다.
-
-```text
-내가 저장한 감시 조건
-  → 내 컴퓨터에서 영화관 공개 시간표 확인
-  → 날짜·작품·극장·포맷 비교
-  → 앱 팝업 처리
-  → 개인 Discord 웹훅으로 전송 (선택)
-```
-
-로컬 자동 검사 명령입니다.
-
-```sh
-npm run format:check
-npm run lint
-npm test
-npm run build
-npm run icons:check
-npm run test:desktop
-```
-
-공급자 조회 방식, 저장 데이터 호환성, 아이콘 생성, 자동 검사와 실조회 진단의 범위는 **[개발·운영 참고](./docs/technical-notes.md)**에서 확인할 수 있습니다. `test:live`는 이전 회차별 알림 단언을 사용하는 진단 도구로, 현재 날짜별 단일 알림 정책의 통과 기준으로 사용하지 않습니다.
-
 ---
 
 <div align="center">

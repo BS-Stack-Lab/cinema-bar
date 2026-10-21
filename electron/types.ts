@@ -141,7 +141,36 @@ export interface PosterRequest {
 export interface PosterResult {
   dataUrl?: string;
 }
+export interface UpdateState {
+  revision: number;
+  phase:
+    | 'disabled'
+    | 'idle'
+    | 'checking'
+    | 'current'
+    | 'available'
+    | 'downloading'
+    | 'verifying'
+    | 'ready'
+    | 'opening'
+    | 'opened'
+    | 'error';
+  currentVersion: string;
+  platformLabel: string;
+  availableVersion?: string;
+  downloadedBytes?: number;
+  totalBytes?: number;
+  lastCheckedAt?: number;
+  nextCheckAllowedAt?: number;
+  message?: string;
+}
 export interface CinemaApi {
+  getUpdateState(): Promise<UpdateState>;
+  checkForUpdates(): Promise<UpdateState>;
+  downloadUpdate(): Promise<UpdateState>;
+  cancelUpdate(): Promise<UpdateState>;
+  openUpdateInstaller(): Promise<UpdateState>;
+  onUpdateState(listener: (state: UpdateState) => void): () => void;
   getPoster(input: PosterRequest): Promise<PosterResult>;
   cancelPoster(input: { requestId: string }): Promise<void>;
   getCatalog(input: CatalogRequest): Promise<Catalog>;

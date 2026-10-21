@@ -768,3 +768,22 @@ footer {
   font-size: 12px;
   line-height: 1.5;
 }
+
+.updateCard {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.updateCard small {
+  display: block;
+  margin-top: 4px;
+}
+.updateCard progress {
+  width: 100%;
+  accent-color: var(--accent);
+}
+.updateCard .buttonRow {
+  flex-wrap: wrap;
+}
+.updateCard button {
+  white-space: normal;
+}

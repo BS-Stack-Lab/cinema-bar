@@ -68,6 +68,11 @@ export function validateIpc(channel: string, payload: unknown) {
       if (!url) throw new Error('허용된 영화관 예매 주소가 아닙니다.');
       return { provider: v.provider as Provider, url };
     }
+    case 'getUpdateState':
+    case 'checkForUpdates':
+    case 'downloadUpdate':
+    case 'cancelUpdate':
+    case 'openUpdateInstaller':
     case 'getSnapshot':
     case 'deleteWebhook':
     case 'refresh':

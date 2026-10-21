@@ -3,8 +3,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import App from '../src/App';
+import { UpdateCard } from '../src/UpdateCard';
 import { status } from '../src/status';
-import type { CinemaApi, Snapshot } from '../electron/types';
+import type { CinemaApi, Snapshot, UpdateState } from '../electron/types';
 import { catalogFixture, rule, NOW } from './fixtures';
 const empty: Snapshot = {
   rules: [],
@@ -34,6 +35,17 @@ function mount(snapshot = empty) {
     rules: [{ ...input, id: 'saved', revision: 1 }],
   }));
   const api = {
+    getUpdateState: vi.fn(async () => ({
+      revision: 0,
+      phase: 'idle',
+      currentVersion: '0.2.0',
+      platformLabel: 'macOS · Apple Silicon · DMG',
+    })),
+    checkForUpdates: vi.fn(),
+    downloadUpdate: vi.fn(),
+    cancelUpdate: vi.fn(),
+    openUpdateInstaller: vi.fn(),
+    onUpdateState: vi.fn(() => () => undefined),
     getSnapshot: vi.fn(async () => snapshot),
     getPoster: vi.fn(async () => ({})),
     cancelPoster: vi.fn(async () => undefined),
@@ -719,5 +731,115 @@ describe('poster cards, exact expiry and optional keep-awake controls', () => {
     await waitFor(() =>
       expect(api.updateSettings).toHaveBeenCalledWith({ shouldKeepAwake: false }),
     );
+  });
+});
+
+describe('update card revisioned isolated state', () => {
+  function setup(state: UpdateState) {
+    let listener!: (next: UpdateState) => void;
+    let resolveInitial!: (next: UpdateState) => void;
+    const unsubscribe = vi.fn();
+    const api = {
+      onUpdateState: vi.fn((receive) => {
+        listener = receive;
+        return unsubscribe;
+      }),
+      getUpdateState: vi.fn(
+        () =>
+          new Promise<UpdateState>((resolve) => {
+            resolveInitial = resolve;
+          }),
+      ),
+      checkForUpdates: vi.fn(async () => ({
+        ...state,
+        revision: state.revision + 1,
+        phase: 'current' as const,
+      })),
+      downloadUpdate: vi.fn(async () => ({
+        ...state,
+        revision: state.revision + 1,
+        phase: 'downloading' as const,
+        downloadedBytes: 512,
+        totalBytes: 1024,
+      })),
+      cancelUpdate: vi.fn(async () => ({
+        ...state,
+        revision: state.revision + 2,
+        phase: 'available' as const,
+      })),
+      openUpdateInstaller: vi.fn(async () => ({
+        ...state,
+        revision: state.revision + 1,
+        phase: 'opened' as const,
+      })),
+    };
+    window.cinema = api as unknown as CinemaApi;
+    const view = render(<UpdateCard />);
+    return {
+      ...view,
+      api,
+      unsubscribe,
+      event: (next: UpdateState) => act(() => listener(next)),
+      initial: (next = state) => act(async () => resolveInitial(next)),
+    };
+  }
+  const idle: UpdateState = {
+    revision: 3,
+    phase: 'idle',
+    currentVersion: '0.2.0',
+    platformLabel: 'macOS · Apple Silicon · DMG',
+  };
+  it('subscribes before initial fetch, rejects stale initial/event responses and unsubscribes', async () => {
+    const f = setup(idle);
+    f.event({ ...idle, revision: 5, phase: 'available', availableVersion: '0.3.0' });
+    await f.initial();
+    expect(screen.getByText('0.3.0 업데이트가 있어요')).toBeTruthy();
+    f.event({ ...idle, revision: 4 });
+    expect(screen.getByText('0.3.0 업데이트가 있어요')).toBeTruthy();
+    f.unmount();
+    expect(f.unsubscribe).toHaveBeenCalledTimes(1);
+  });
+  it('uses payload-free keyboard actions and communicates progress and cancellation', async () => {
+    const state = {
+      ...idle,
+      phase: 'available' as const,
+      availableVersion: '0.3.0',
+      totalBytes: 1024,
+    };
+    const f = setup(state);
+    await f.initial();
+    const download = screen.getByRole('button', { name: '업데이트 다운로드' });
+    download.focus();
+    await userEvent.setup().keyboard('{Enter}');
+    expect(f.api.downloadUpdate).toHaveBeenCalledWith();
+    expect(
+      screen.getByRole('progressbar', { name: '업데이트 다운로드 진행률' }).getAttribute('value'),
+    ).toBe('50');
+    await userEvent.setup().click(screen.getByRole('button', { name: '다운로드 취소' }));
+    expect(f.api.cancelUpdate).toHaveBeenCalledWith();
+    expect(screen.getByRole('button', { name: '업데이트 다운로드' })).toBeTruthy();
+  });
+  it('retains open-error retry and user quit/install instructions for each platform', async () => {
+    const f = setup({ ...idle, phase: 'ready', message: '다시 열기를 눌러 주세요.' });
+    await f.initial();
+    expect(screen.getByRole('alert').textContent).toContain('다시 열기');
+    expect(screen.getByText(/Cinema Bar를 종료한 뒤 설치를 완료/)).toBeTruthy();
+    expect(screen.getByText(/DMG에서 Cinema Bar.app/)).toBeTruthy();
+    await userEvent.setup().click(screen.getByRole('button', { name: '설치 파일 열기' }));
+    expect(f.api.openUpdateInstaller).toHaveBeenCalledWith();
+    expect(screen.getByRole('button', { name: '설치 파일 다시 열기' })).toBeTruthy();
+    f.event({ ...idle, revision: 10, phase: 'ready', platformLabel: 'Windows · x64 · Setup' });
+    expect(screen.getByText(/기존 Cinema Bar와 같은 위치/)).toBeTruthy();
+  });
+  it('shows disabled builds without controls and announces safe request failures', async () => {
+    const f = setup({ ...idle, phase: 'disabled', message: '개발 실행 안내' });
+    await f.initial();
+    expect(screen.queryByRole('button')).toBeNull();
+    expect(screen.getByText('개발 실행 안내')).toBeTruthy();
+    f.event({ ...idle, revision: 5 });
+    f.api.checkForUpdates.mockRejectedValueOnce(new Error('private detail'));
+    await userEvent.setup().click(screen.getByRole('button', { name: '업데이트 확인' }));
+    expect(screen.getByRole('alert').textContent).toContain('다시 시도');
+    expect(screen.queryByText('private detail')).toBeNull();
   });
 });

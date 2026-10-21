@@ -284,9 +284,14 @@ try {
         $primary.codec -eq 'in-memory' -and $secondary.codec -eq 'in-memory' -and
         $primary.realSafeStorageCalls -eq 0 -and $secondary.realSafeStorageCalls -eq 0 -and
         $smoke.realSafeStorageCalls -eq 0 -and $smoke.realDiscordSends -eq 0 -and
-        $smoke.realLoginWrites -eq 0 -and $smoke.mockProviders -and $smoke.mockDiscord
+        $smoke.realLoginWrites -eq 0 -and $smoke.mockProviders -and $smoke.mockDiscord -and
+        $smoke.updateIsolation.mockTransport -and $smoke.updateIsolation.mockOpener -and $smoke.updateIsolation.mockQuit -and
+        $smoke.updateIsolation.realUpdateNetworkCalls -eq 0 -and $smoke.updateIsolation.realInstallerOpens -eq 0 -and
+        $smoke.updateIsolation.updaterQuitRequests -eq 0 -and
+        $smoke.updateIsolation.downloadsPath -eq (Join-Path $primary.isolatedUserData 'Downloads') -and
+        $smoke.updateIsolation.metadataPath -eq (Join-Path $primary.isolatedUserData 'update-check.json')
     ) $result.smoke
-    # Exact shared action set: frozen macOS 107-check baseline minus the seven Dock-only fixtures.
+    # Exact shared action set: 100 frozen baseline actions plus 14 updater fixtures.
     $expectedActions = @(
         'primary-smoke-identity-isolated',
         'smoke-memory-codec-roundtrip',
@@ -387,12 +392,27 @@ try {
         'day-popup-no-repeat-true',
         'popup-quit-cleanup',
         'capturePage-real-electron',
-        'snapshot-no-plaintext-webhook'
+        'snapshot-no-plaintext-webhook',
+        'update-state-current-version',
+        'update-check-stable-platform',
+        'update-download-hash-ready',
+        'update-download-cancel-cleans-partial',
+        'update-installer-open-failure-keeps-running',
+        'update-installer-open-retry-no-redownload',
+        'update-ipc-rejects-payload',
+        'update-isolation-no-real-side-effects',
+        'update-cooldown-survives-manager-restart',
+        'update-metadata-failure-blocks-network',
+        'update-user-quit-cleanup-order',
+        'update-user-quit-deadline-once',
+        'update-quit-cleanup-error-continues',
+        'update-handed-off-file-retained'
     )
     $actualNames = @($smoke.actions | ForEach-Object { $_.name })
     $difference = @(Compare-Object ($expectedActions | Sort-Object) ($actualNames | Sort-Object))
     Assert-Check 'smoke-actions' (
-        $smoke.actions.Count -eq 100 -and $difference.Count -eq 0 -and
+        $smoke.actions.Count -eq 114 -and $expectedActions.Count -eq 114 -and
+        @($actualNames | Sort-Object -Unique).Count -eq 114 -and $difference.Count -eq 0 -and
         @($smoke.actions | Where-Object { !$_.passed }).Count -eq 0
     ) @{ expected = $expectedActions; actual = $actualNames; difference = $difference }
     Stop-OwnedProcesses

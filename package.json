@@ -1,6 +1,6 @@
 {
   "name": "cinema-bar",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "개인 영화 예매 오픈 감시 메뉴바 앱",

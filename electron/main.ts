@@ -31,6 +31,7 @@ import { PowerPolicy } from './power.js';
 import { validateIpc, validateSender } from './ipc.js';
 import { isTrayAtMenuBar, type TraySample } from './trayVisibility.js';
 import { createSmokeRuntime } from './smoke.js';
+import { UpdateManager, createUpdateQuitHandler } from './updates.js';
 import type { CatalogRequest, PosterRequest, Provider, RuleInput } from './types.js';
 const directory = path.dirname(fileURLToPath(import.meta.url));
 const isSmoke = process.env.CINEMA_SMOKE === '1' && process.argv.includes('--cinema-smoke');
@@ -56,6 +57,7 @@ let popups: PopupAlerts;
 let catalog: CatalogService;
 let posters: PosterService;
 let power: PowerPolicy;
+let updates: UpdateManager;
 const traySamples: TraySample[] = [];
 let isTrayPlaced: boolean | undefined;
 let isDockShowPending = false;
@@ -153,15 +155,23 @@ function sampleTray() {
 }
 app.on('activate', () => showWindow());
 app.on('second-instance', () => showWindow());
-app.on('before-quit', () => {
-  isQuitting = true;
-  clearTimeout(dockHideTimer);
-  engine?.stop();
-  popups?.dispose();
-  catalog?.dispose();
-  posters?.dispose();
-  power?.dispose();
-});
+app.on(
+  'before-quit',
+  createUpdateQuitHandler({
+    hasActiveIo: () => updates?.hasActiveIo ?? false,
+    dispose: () => updates?.dispose() ?? Promise.resolve(),
+    continueQuit: () => app.quit(),
+    stop: () => {
+      isQuitting = true;
+      clearTimeout(dockHideTimer);
+      engine?.stop();
+      popups?.dispose();
+      catalog?.dispose();
+      posters?.dispose();
+      power?.dispose();
+    },
+  }),
+);
 app.on('window-all-closed', () => undefined);
 if (hasLock)
   void app
@@ -171,6 +181,21 @@ if (hasLock)
         app.setActivationPolicy('regular');
         await app.dock?.show();
       }
+      updates = new UpdateManager(
+        smokeRuntime?.updateOptions ?? {
+          currentVersion: app.getVersion(),
+          platform: process.platform,
+          arch: process.arch,
+          isPackaged: app.isPackaged,
+          userDataPath: app.getPath('userData'),
+          downloadsPath: app.getPath('downloads'),
+          fetch,
+          openPath: (file) => shell.openPath(file),
+        },
+      );
+      updates.subscribe((state) => {
+        if (window && !window.isDestroyed()) window.webContents.send('cinema:updateState', state);
+      });
       const store = new Store(app.getPath('userData'));
       await store.load();
       const secrets = new SecretStore(
@@ -326,6 +351,11 @@ if (hasLock)
         'cancelPoster',
         'getCatalog',
         'cancelCatalog',
+        'getUpdateState',
+        'checkForUpdates',
+        'downloadUpdate',
+        'cancelUpdate',
+        'openUpdateInstaller',
         'getSnapshot',
         'saveRule',
         'deleteRule',
@@ -358,6 +388,16 @@ if (hasLock)
             case 'cancelCatalog':
               catalog.cancel((value as { requestId: string }).requestId);
               return;
+            case 'getUpdateState':
+              return updates.snapshot();
+            case 'checkForUpdates':
+              return updates.check();
+            case 'downloadUpdate':
+              return updates.download();
+            case 'cancelUpdate':
+              return updates.cancel();
+            case 'openUpdateInstaller':
+              return updates.openInstaller();
             case 'getSnapshot':
               return engine.snapshot();
             case 'saveRule':
@@ -403,6 +443,8 @@ if (hasLock)
       await window.loadURL(pageUrl);
       engine.setOnline(net.isOnline());
       engine.start();
+      if (!isSmoke) updates.start();
+      else await updates.initialize();
       if (isSmoke) {
         window.show();
         const { runSmoke } = await import('./smoke.js');
@@ -423,6 +465,7 @@ if (hasLock)
           popups,
           power,
           smokeRuntime: smokeRuntime!,
+          updates,
         });
       } else showWindow();
     })

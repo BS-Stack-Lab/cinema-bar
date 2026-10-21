@@ -1,6 +1,18 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { CinemaApi, Snapshot } from './types.js';
+import type { CinemaApi, Snapshot, UpdateState } from './types.js';
 const api: CinemaApi = {
+  getUpdateState: () => ipcRenderer.invoke('cinema:getUpdateState'),
+  checkForUpdates: () => ipcRenderer.invoke('cinema:checkForUpdates'),
+  downloadUpdate: () => ipcRenderer.invoke('cinema:downloadUpdate'),
+  cancelUpdate: () => ipcRenderer.invoke('cinema:cancelUpdate'),
+  openUpdateInstaller: () => ipcRenderer.invoke('cinema:openUpdateInstaller'),
+  onUpdateState: (listener) => {
+    const handler = (_event: unknown, value: UpdateState) => listener(value);
+    ipcRenderer.on('cinema:updateState', handler);
+    return () => {
+      ipcRenderer.removeListener('cinema:updateState', handler);
+    };
+  },
   getPoster: (input) => ipcRenderer.invoke('cinema:getPoster', input),
   cancelPoster: (input) => ipcRenderer.invoke('cinema:cancelPoster', input),
   getCatalog: (input) => ipcRenderer.invoke('cinema:getCatalog', input),

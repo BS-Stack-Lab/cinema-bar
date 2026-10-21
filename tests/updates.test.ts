@@ -131,6 +131,15 @@ function wrapFile(file: UpdateFile, patch: Partial<UpdateFile>): UpdateFile {
     ...patch,
   };
 }
+async function expectExclusiveRegularFile(file: string) {
+  const stat = await lstat(file);
+  expect(stat.isFile()).toBe(true);
+  expect(stat.isSymbolicLink()).toBe(false);
+  if (process.platform !== 'win32') expect(stat.mode & 0o777).toBe(0o600);
+  const contents = await readFile(file);
+  await expect(updateIo.open(file, 'wx', 0o600)).rejects.toMatchObject({ code: 'EEXIST' });
+  expect(await readFile(file)).toEqual(contents);
+}
 afterEach(async () => {
   for (const manager of managers.splice(0)) void manager.dispose();
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
@@ -198,7 +207,8 @@ describe('isolated update manager', () => {
     }
   });
   it('commits a private preflight lease before HTTP and clears it before publishing availability', async () => {
-    const f = await fixture();
+    const open = vi.fn<UpdateIo['open']>((...args) => updateIo.open(...args));
+    const f = await fixture({ io: { ...updateIo, open } });
     f.fetcher.mockImplementation(async () => {
       const record = await f.record();
       expect(record.githubBlockedUntil).toBe(NOW + 24 * HOUR);
@@ -214,12 +224,20 @@ describe('isolated update manager', () => {
       availableVersion: '0.3.0',
     });
     expect((await f.record()).githubBlockedUntil).toBe(0);
-    expect((await lstat(f.manager.metadataPath)).mode & 0o777).toBe(0o600);
+    const metadataCreates = open.mock.calls.filter(([file]) => file.endsWith('.tmp'));
+    expect(metadataCreates.length).toBeGreaterThan(0);
+    for (const [file, flags, mode] of metadataCreates) {
+      expect(path.dirname(file)).toBe(f.root);
+      expect(flags).toBe('wx');
+      expect(mode).toBe(0o600);
+    }
+    await expectExclusiveRegularFile(f.manager.metadataPath);
     expect(new Set(revisions).size).toBe(revisions.length);
     expect(await readdir(f.root)).toEqual(['Downloads', 'update-check.json']);
   });
   it('streams exact bytes into an exclusive private part and rehashes before explicit open; failed handoff retries without network', async () => {
-    const f = await fixture();
+    const open = vi.fn<UpdateIo['open']>((...args) => updateIo.open(...args));
+    const f = await fixture({ io: { ...updateIo, open } });
     await f.manager.check();
     const states: string[] = [];
     f.manager.subscribe((state) => states.push(state.phase));
@@ -230,7 +248,8 @@ describe('isolated update manager', () => {
     const file = path.join(f.downloads, directories[0], name);
     expect(await readdir(path.dirname(file))).toEqual([name]);
     expect(await readFile(file)).toEqual(bytes);
-    expect((await lstat(file)).mode & 0o777).toBe(0o600);
+    expect(open).toHaveBeenCalledWith(`${file}.part`, 'wx', 0o600);
+    await expectExclusiveRegularFile(file);
     expect(states).toContain('verifying');
     expect(f.manager.snapshot().phase).toBe('ready');
     f.opener.mockResolvedValueOnce('fixture failure');

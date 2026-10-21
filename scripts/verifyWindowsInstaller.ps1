@@ -401,7 +401,19 @@ try {
     $uninstaller = Join-Path $installDirectory 'unins000.exe'
     Invoke-Installer $uninstaller @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART',
         ('/LOG="{0}"' -f (Join-Path $evidenceDirectory 'uninstall.log'))) 'uninstall'
-    Assert-Check 'uninstall-removes-payload' (!(Test-Path -LiteralPath $installDirectory)) $installDirectory
+    $uninstallDeadline = [DateTime]::UtcNow.AddSeconds(15)
+    while ((Test-Path -LiteralPath $installDirectory) -and [DateTime]::UtcNow -lt $uninstallDeadline) {
+        Start-Sleep -Milliseconds 200
+    }
+    $hasUninstallPayload = Test-Path -LiteralPath $installDirectory
+    $uninstallLeftovers = @()
+    if ($hasUninstallPayload) {
+        $uninstallLeftovers = @(Get-ChildItem -LiteralPath $installDirectory -Force -Recurse -ErrorAction SilentlyContinue |
+            Select-Object FullName, PSIsContainer)
+    }
+    Assert-Check 'uninstall-removes-payload' (!$hasUninstallPayload) @{
+        directory = $installDirectory; timeoutSeconds = 15; leftovers = $uninstallLeftovers
+    }
     Assert-Check 'uninstall-removes-shortcuts' (@($shortcuts | Where-Object {
         Test-Path -LiteralPath $_
     }).Count -eq 0) $shortcuts

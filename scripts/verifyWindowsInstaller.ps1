@@ -147,15 +147,23 @@ try {
         tree = (git rev-parse 'HEAD^{tree}').Trim()
         clean = @(git status --porcelain).Count -eq 0
     }
+    $compilerLog = Join-Path $evidenceDirectory 'compile.log'
+    $compilerVersionMatch = [regex]::Match((Get-Content -LiteralPath $compilerLog -Raw),
+        '(?m)^Compiler engine version:\s*Inno Setup\s+(\d+\.\d+\.\d+(?:\.\d+)?)\s*$')
+    $innoVersion = $compilerVersionMatch.Groups[1].Value
     $result.environment = [ordered]@{
         os = $os.Caption; osVersion = $os.Version; osArchitecture = $os.OSArchitecture
         nodeArchitecture = (& node -p process.arch).Trim()
         node = (& node --version).Trim()
         electron = (Get-Content node_modules/electron/package.json -Raw | ConvertFrom-Json).version
         electronExecutableVersion = (Get-Item (Join-Path $packageDirectory 'Cinema Bar.exe')).VersionInfo.FileVersion
-        inno = (Get-Item -LiteralPath $CompilerPath).VersionInfo.ProductVersion
+        inno = $innoVersion
+        innoFileProductVersion = (Get-Item -LiteralPath $CompilerPath).VersionInfo.ProductVersion
         runnerImage = $env:ImageOS; runnerImageVersion = $env:ImageVersion
     }
+    Assert-Check 'inno-compiler-version' (
+        $compilerVersionMatch.Success -and $innoVersion -match '[1-9]'
+    ) @{ version = $innoVersion; log = $compilerLog }
     Assert-Check 'source-clean' $result.source.clean $result.source
     if (Test-Path -LiteralPath $runKey) {
         $initialRunNames = @((Get-Item -LiteralPath $runKey).GetValueNames())

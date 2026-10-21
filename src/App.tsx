@@ -420,9 +420,9 @@ export default function App() {
           <>
             <div className="sectionTitle">
               <h2>내 연결과 실행</h2>
-              <UpdateCard />
               <span>이 기기에만 저장</span>
             </div>
+            <UpdateCard />
             <div className="card settingsCard">
               <label className="settingRow">
                 <span>

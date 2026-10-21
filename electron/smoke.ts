@@ -395,11 +395,70 @@ export async function runSmoke({
     const layouts = [];
     for (const width of [340, 440]) {
       window.setBounds({ ...bounds, width });
-      const layout = await ui<{ fits: boolean; live: boolean; button: string }>(
-        `(() => { const card = document.querySelector('.updateCard'); const rect = card.getBoundingClientRect(); const buttons = Array.from(card.querySelectorAll('button')); return { fits: buttons.every(button => {const b=button.getBoundingClientRect();return b.left>=rect.left&&b.right<=rect.right&&b.width>0}),live:!!card.querySelector('[role=status][aria-live=polite]'),button:buttons[0].textContent }; })()`,
+      await waitFor(
+        `window.innerWidth === ${width} && document.querySelector('.updateCard [role=status]')?.textContent === '설치 파일을 열었어요' && document.querySelector('.updateCard button')?.textContent === '설치 파일 다시 열기'`,
       );
-      assert.ok(layout.fits && layout.live && layout.button.includes('다시 열기'));
-      layouts.push({ width, ...layout });
+      await ui(`(async () => {
+        document.querySelector('.updateCard').scrollIntoView({ block: 'start', behavior: 'instant' });
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      })()`);
+      const layout = await ui<{
+        innerWidth: number;
+        belowHeader: boolean;
+        fullWidth: boolean;
+        visible: boolean;
+        fits: boolean;
+        live: boolean;
+        button: string;
+        headerBottom: number;
+        cardTop: number;
+        cardBottom: number;
+        cardWidth: number;
+        referenceWidth: number;
+        contentWidth: number;
+        cardLeft: number;
+        referenceLeft: number;
+      }>(`(() => {
+        const panel = document.querySelector('[role=tabpanel]');
+        const card = panel.querySelector('.updateCard');
+        const header = panel.querySelector(':scope > .sectionTitle');
+        const reference = panel.querySelector('.settingsCard:not(.updateCard)');
+        const rect = card.getBoundingClientRect();
+        const headerRect = header.getBoundingClientRect();
+        const referenceRect = reference.getBoundingClientRect();
+        const panelRect = panel.getBoundingClientRect();
+        const style = getComputedStyle(panel);
+        const paddingLeft = parseFloat(style.paddingLeft);
+        const contentWidth = panel.clientWidth - paddingLeft - parseFloat(style.paddingRight);
+        const buttons = Array.from(card.querySelectorAll('button'));
+        return {
+          innerWidth: window.innerWidth,
+          belowHeader: card.previousElementSibling === header && rect.top >= headerRect.bottom - 0.5,
+          fullWidth: Math.abs(rect.width - referenceRect.width) <= 1 && Math.abs(rect.left - referenceRect.left) <= 1 && Math.abs(rect.width - contentWidth) <= 1 && Math.abs(rect.left - panelRect.left - paddingLeft) <= 1,
+          visible: rect.top >= panelRect.top - 0.5 && rect.bottom <= panelRect.bottom + 0.5 && rect.left >= 0 && rect.right <= window.innerWidth,
+          fits: buttons.length > 0 && buttons.every(button => { const b = button.getBoundingClientRect(); return b.left >= rect.left && b.right <= rect.right && b.top >= rect.top && b.bottom <= rect.bottom && b.width > 0 && b.height > 0; }),
+          live: !!card.querySelector('[role=status][aria-live=polite]'),
+          button: buttons[0].textContent,
+          headerBottom: headerRect.bottom, cardTop: rect.top, cardBottom: rect.bottom,
+          cardWidth: rect.width, referenceWidth: referenceRect.width, contentWidth,
+          cardLeft: rect.left, referenceLeft: referenceRect.left,
+        };
+      })()`);
+      assert.ok(
+        layout.innerWidth === width &&
+          layout.belowHeader &&
+          layout.fullWidth &&
+          layout.visible &&
+          layout.fits &&
+          layout.live &&
+          layout.button === '설치 파일 다시 열기',
+        JSON.stringify(layout),
+      );
+      const screenshot = `update-opened-${width}.png`;
+      const image = await window.webContents.capturePage();
+      assert.ok(!image.isEmpty());
+      await writeFile(path.join(output, screenshot), image.toPNG());
+      layouts.push({ width, ...layout, screenshot });
     }
     window.setBounds(bounds);
     check(

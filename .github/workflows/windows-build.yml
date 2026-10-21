@@ -1,0 +1,70 @@
+name: Windows release verification
+
+on:
+  workflow_dispatch:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: windows-2025
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Prepare diagnostics
+        run: |
+          New-Item -ItemType Directory -Force release/windows-evidence | Out-Null
+          "ImageOS=$env:ImageOS ImageVersion=$env:ImageVersion" | Set-Content release/windows-evidence/runner.txt
+          node --version | Add-Content release/windows-evidence/runner.txt
+          npm --version | Add-Content release/windows-evidence/runner.txt
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Check formatting
+        run: npm run format:check
+      - name: Lint and typecheck
+        run: npm run lint
+      - name: Unit tests
+        run: npm test
+      - name: Build native Windows package
+        run: npm run build
+      - name: Compile per-user installer
+        run: |
+          $compiler = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6/ISCC.exe'
+          if (!(Test-Path $compiler)) { throw 'Bundled Inno Setup compiler is missing' }
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          & $compiler "/DAppVersion=$version" scripts/windowsInstaller.iss 2>&1 | Tee-Object release/windows-evidence/compile.log
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed: $LASTEXITCODE" }
+          "CINEMA_INNO_COMPILER=$compiler" | Add-Content $env:GITHUB_ENV
+      - name: Verify installed app, reinstall, uninstall and ZIP
+        run: ./scripts/verifyWindowsInstaller.ps1 -CompilerPath $env:CINEMA_INNO_COMPILER
+      - name: Upload verified release files
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-release
+          path: |
+            release/windows-release/Cinema-Bar-*-Windows-x64-Setup.exe
+            release/windows-release/Cinema-Bar-*-Windows-x64.zip
+            release/windows-release/SHA256SUMS-Windows.txt
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload verification evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-evidence
+          path: release/windows-evidence/
+          if-no-files-found: error
+          retention-days: 14

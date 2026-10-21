@@ -7,13 +7,37 @@
     원하는 극장과 작품을 저장하면 앱과 디스코드로 알려주는 개인 설치형 알리미
   </p>
   <p><code>내 컴퓨터에서 실행</code> <code>개인 웹훅 연결</code> <code>macOS · Windows</code></p>
+  <h2>앱 다운로드</h2>
+  <p>내 운영체제에 맞는 앱을 설치하세요. Node.js나 개발 도구는 필요하지 않습니다.</p>
+  <table>
+    <thead>
+      <tr>
+        <th>🪟 Windows 앱</th>
+        <th>🍎 macOS 앱</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td align="center">Windows 10/11 · x64</td>
+        <td align="center">Apple Silicon(M1 이상) · macOS 13 이상</td>
+      </tr>
+      <tr>
+        <td align="center"><a href="https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.1.0/Cinema-Bar-0.1.0-Windows-x64-Setup.exe"><strong>Windows 설치 파일 다운로드 (.exe)</strong></a></td>
+        <td align="center"><a href="https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.1.0/Cinema-Bar-0.1.0-macOS-arm64.dmg"><strong>macOS 설치 파일 다운로드 (.dmg)</strong></a></td>
+      </tr>
+      <tr>
+        <td align="center"><a href="https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.1.0/Cinema-Bar-0.1.0-Windows-x64.zip">Windows ZIP 다운로드</a></td>
+        <td align="center"><a href="https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.1.0/Cinema-Bar-0.1.0-macOS-arm64.zip">macOS ZIP 다운로드</a></td>
+      </tr>
+      <tr>
+        <td align="center"><a href="#windows-앱으로-사용하기">Windows 설치 방법 →</a></td>
+        <td align="center"><a href="#macos-앱으로-사용하기">macOS 설치 방법 →</a></td>
+      </tr>
+    </tbody>
+  </table>
   <p>
-    <a href="https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.1.0/Cinema-Bar-0.1.0-macOS-arm64.dmg"><strong> macOS 설치 파일 다운로드</strong></a><br />
-    v0.1.0 · Apple Silicon(M1 이상) · macOS 13 이상
-  </p>
-  <p>
-    <a href="https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.1.0/Cinema-Bar-0.1.0-Windows-x64-Setup.exe"><strong>Windows 설치 파일 다운로드</strong></a><br />
-    v0.1.0 · Windows 10/11 · x64
+    v0.1.0 · <a href="https://github.com/BS-Stack-Lab/cinema-bar/releases/latest">전체 릴리스</a> ·
+    <a href="https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.1.0/SHA256SUMS.txt">SHA256 체크섬</a>
   </p>
   <p>
     <a href="#주요-기능">주요 기능</a> ·
@@ -58,9 +82,12 @@
 
 ## 설치와 실행
 
-### macOS 앱으로 사용하기
+사용 중인 운영체제의 설치 파일을 선택하세요. Node.js나 개발 도구 설치 없이 앱으로 사용할 수 있습니다.
 
-Node.js나 개발 도구 설치 없이 사용할 수 있습니다. **[GitHub Releases](https://github.com/BS-Stack-Lab/cinema-bar/releases/latest)**에서 설치 파일을 받으세요.
+- **Windows**: [설치 파일(.exe) 다운로드](https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.1.0/Cinema-Bar-0.1.0-Windows-x64-Setup.exe) → [Windows 설치 방법](#windows-앱으로-사용하기)
+- **macOS**: [설치 파일(.dmg) 다운로드](https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.1.0/Cinema-Bar-0.1.0-macOS-arm64.dmg) → [macOS 설치 방법](#macos-앱으로-사용하기)
+
+### macOS 앱으로 사용하기
 
 | 다운로드                                                                                                                       | 대상                          | 용도                                                |
 | ------------------------------------------------------------------------------------------------------------------------------ | ----------------------------- | --------------------------------------------------- |

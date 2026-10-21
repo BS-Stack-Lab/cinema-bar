@@ -2,6 +2,8 @@ import type { Fetcher } from './providers/index.js';
 import { retryAfter } from './providers/index.js';
 import type { Session } from './types.js';
 import { bookingUrl } from './validation.js';
+import { alertHeading } from './dayAlerts.js';
+import { sessionFormatLabel, sessionTimeLabel } from './sessionTiming.js';
 export type DeliveryResult =
   | { kind: 'sent' }
   | { kind: 'retry'; delayMs: number; detail: string }
@@ -13,8 +15,8 @@ export function discordPayload(session: Session) {
     content: [
       `🎬 ${title}`,
       `${session.provider.toUpperCase()} · ${session.theaterName.slice(0, 80)}`,
-      `${session.date} ${session.time} · ${session.format} · ${session.screen.slice(0, 80)}`,
-      '새 예매 가능 상영을 발견했어요.',
+      `${session.date} ${session.notificationKind === 'dayOpen' ? '가장 빠른 회차 ' : ''}${sessionTimeLabel(session)} · ${sessionFormatLabel(session.format)} · ${session.screen.slice(0, 80)}`,
+      alertHeading(session),
       ...(url ? [url] : []),
     ]
       .join('\n')

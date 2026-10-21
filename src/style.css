@@ -48,11 +48,22 @@ main {
   flex-direction: column;
 }
 .brand {
+  app-region: drag;
+  user-select: none;
   display: flex;
   justify-content: space-between;
   align-items: center;
   margin-bottom: 23px;
   gap: 8px;
+}
+button,
+input,
+select,
+textarea,
+a,
+[role='button'],
+[contenteditable='true'] {
+  app-region: no-drag;
 }
 .brandMark {
   display: flex;
@@ -713,4 +724,47 @@ footer {
 }
 .ruleForm .buttonRow {
   padding-bottom: 6px;
+}
+
+.ticketArt {
+  position: relative;
+  overflow: hidden;
+}
+.ticketArt.hasPoster {
+  background: #17171d;
+  height: auto;
+  display: block;
+}
+.ticketArt img {
+  width: 100%;
+  height: auto;
+  object-fit: contain;
+  display: block;
+}
+.ticketArt.hasPoster span {
+  position: absolute;
+  right: 8px;
+  bottom: 6px;
+  padding: 3px 5px;
+  border-radius: 4px;
+  background: #262628e8;
+  color: #eee9ff;
+}
+.earliestSession {
+  margin: 10px 0;
+  font-size: 11px;
+  color: var(--text);
+}
+.earliestSession small,
+.earliestSession strong,
+.earliestSession span {
+  display: block;
+}
+.earliestSession small {
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.earliestSession strong {
+  font-size: 12px;
+  line-height: 1.5;
 }

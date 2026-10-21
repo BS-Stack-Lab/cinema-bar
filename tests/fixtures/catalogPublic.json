@@ -37,7 +37,8 @@
     "data": [
       {
         "movNo": "30001367",
-        "movNm": "극장판 치이카와-인어 섬의 비밀"
+        "movNm": "극장판 치이카와-인어 섬의 비밀",
+        "i320Fnm": "30001367_320.jpg"
       },
       {
         "movNo": "30001450",
@@ -74,7 +75,8 @@
     "movieList": [
       {
         "movieNo": "26058900",
-        "movieNm": "실낙원"
+        "movieNm": "실낙원",
+        "movieImgPath": "/SharedImg/2026/10/14/ftMynesIgnNFPtPj59KlhsG6ifaruRgW_150.png"
       },
       {
         "movieNo": "26048500",
@@ -88,7 +90,8 @@
     "crtnMovieList": [
       {
         "movieNo": "26062100",
-        "movieNm": "스틸레이"
+        "movieNm": "스틸레이",
+        "movieImgPath": "/SharedImg/2026/10/11/qbNvUEI6kPtFsNEMlTOvpicAKJ6d7D7R_150.jpg"
       }
     ]
   },
@@ -154,7 +157,8 @@
         "Items": [
           {
             "RepresentationMovieCode": "24128",
-            "MovieNameKR": "오디세이"
+            "MovieNameKR": "오디세이",
+            "PosterURL": "http://cf.lottecinema.co.kr//Media/MovieFile/MovieImg/202607/24128_503_1.jpg"
           },
           {
             "RepresentationMovieCode": "24708",

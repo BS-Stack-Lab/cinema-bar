@@ -1,6 +1,7 @@
 import { ProviderError, retryAfter, type Fetcher } from './providers/index.js';
 import { koreanToday, object, text } from './validation.js';
 import type { Catalog, CatalogRequest, Provider } from './types.js';
+import { catalogPosterUrl } from './posters.js';
 const MAX_BODY = 2 * 1024 * 1024;
 const TTL = 15 * 60 * 1000;
 const MIN_REFRESH = 10000;
@@ -73,7 +74,13 @@ export function parseCatalog(
           regionId: id(r.regnGrpCd),
         })),
       );
-      movies = rows(film.data).map((m) => ({ id: id(m.movNo), title: label(m.movNm, 120) }));
+      movies = rows(film.data).map((m) => ({
+        id: id(m.movNo),
+        title: label(m.movNm, 120),
+        ...(catalogPosterUrl(provider, id(m.movNo), m.i320Fnm)
+          ? { posterUrl: catalogPosterUrl(provider, id(m.movNo), m.i320Fnm) }
+          : {}),
+      }));
     } else if (provider === 'megabox') {
       if (body.statCd !== 0 && body.statCd !== '0') throw new Error('MEGABOX 상태 오류');
       const branches = rows(body.areaBrchList);
@@ -86,6 +93,9 @@ export function parseCatalog(
       movies = [...rows(body.movieList), ...rows(body.crtnMovieList)].map((m) => ({
         id: id(m.movieNo),
         title: label(m.movieNm, 120),
+        ...(catalogPosterUrl(provider, id(m.movieNo), m.movieImgPath)
+          ? { posterUrl: catalogPosterUrl(provider, id(m.movieNo), m.movieImgPath) }
+          : {}),
       }));
     } else {
       const division = object(body.CinemaDivison);
@@ -109,11 +119,27 @@ export function parseCatalog(
       movies = rows(object(films.Movies).Items).map((m) => ({
         id: id(m.RepresentationMovieCode),
         title: label(m.MovieNameKR, 120),
+        ...(catalogPosterUrl(provider, id(m.RepresentationMovieCode), m.PosterURL)
+          ? { posterUrl: catalogPosterUrl(provider, id(m.RepresentationMovieCode), m.PosterURL) }
+          : {}),
       }));
     }
     regions = unique(regions);
     theaters = unique(theaters);
-    movies = unique(movies);
+    const movieMap = new Map<string, Catalog['movies'][number]>();
+    for (const movie of movies) {
+      const old = movieMap.get(movie.id);
+      if (old && old.title !== movie.title) throw new Error('중복 ID 불일치');
+      const posterUrl = [old?.posterUrl, movie.posterUrl]
+        .filter((url): url is string => !!url)
+        .sort()[0];
+      movieMap.set(movie.id, {
+        id: movie.id,
+        title: movie.title,
+        ...(posterUrl ? { posterUrl } : {}),
+      });
+    }
+    movies = [...movieMap.values()];
     const regionIds = new Set(regions.map((r) => r.id));
     if (
       theaters.some((t) => !regionIds.has(t.regionId)) ||

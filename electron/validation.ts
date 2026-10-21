@@ -61,6 +61,7 @@ export function validateRule(value: unknown, allowPast = false): RuleInput {
     'date',
     'format',
     'isEnabled',
+    'shouldNotifyEarliestOnly',
   ]);
   if (!PROVIDERS.includes(v.provider as Provider)) throw new Error('영화관을 선택하세요.');
   if (!FORMATS.includes(v.format as (typeof FORMATS)[number]))
@@ -80,15 +81,19 @@ export function validateRule(value: unknown, allowPast = false): RuleInput {
     date,
     format: v.format as RuleInput['format'],
     isEnabled: flag(v.isEnabled),
+    ...(Object.hasOwn(v, 'shouldNotifyEarliestOnly')
+      ? { shouldNotifyEarliestOnly: flag(v.shouldNotifyEarliestOnly) }
+      : {}),
   };
 }
 export function validateSettings(value: unknown) {
   const v = object(value);
-  exact(v, ['intervalSeconds', 'shouldStartAtLogin', 'shouldNotifyLocally']);
+  exact(v, ['intervalSeconds', 'shouldStartAtLogin', 'shouldNotifyLocally', 'shouldKeepAwake']);
   const result: {
     intervalSeconds?: number;
     shouldStartAtLogin?: boolean;
     shouldNotifyLocally?: boolean;
+    shouldKeepAwake?: boolean;
   } = {};
   if (v.intervalSeconds !== undefined) {
     if (
@@ -101,6 +106,7 @@ export function validateSettings(value: unknown) {
   }
   if (v.shouldStartAtLogin !== undefined) result.shouldStartAtLogin = flag(v.shouldStartAtLogin);
   if (v.shouldNotifyLocally !== undefined) result.shouldNotifyLocally = flag(v.shouldNotifyLocally);
+  if (v.shouldKeepAwake !== undefined) result.shouldKeepAwake = flag(v.shouldKeepAwake);
   return result;
 }
 export function validateWebhook(value: unknown) {
@@ -186,6 +192,11 @@ function validateSession(value: unknown): asserts value is Session {
     throw new Error('저장 상영 정보 오류');
   flag(s.isBookable);
   if (
+    Object.hasOwn(s, 'notificationKind') &&
+    !['dayOpen', 'earliest'].includes(s.notificationKind as string)
+  )
+    throw new Error('저장 알림 종류 오류');
+  if (
     typeof s.bookingUrl !== 'string' ||
     s.bookingUrl.length > 2000 ||
     (s.bookingUrl && !bookingUrl(s.provider as Provider, s.bookingUrl))
@@ -237,6 +248,7 @@ export function validateState(value: unknown, legacy = false): State {
   if (!Number.isInteger(settings.intervalSeconds) || settings.shouldStartAtLogin === undefined)
     throw new Error('저장 설정 오류');
   if (!legacy) flag(settings.shouldNotifyLocally);
+  if (Object.hasOwn(settings, 'shouldKeepAwake')) flag(settings.shouldKeepAwake);
   const secret = object(s.secret);
   number(secret.revision);
   flag(secret.isTerminal);

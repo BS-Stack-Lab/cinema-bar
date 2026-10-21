@@ -1,13 +1,17 @@
 import { status } from './status';
-import { useEffect, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useState, useSyncExternalStore, type FormEvent } from 'react';
+import { flushSync } from 'react-dom';
 import {
   FORMATS,
   type Catalog,
   type Provider,
   type RuleInput,
+  type Rule,
+  type RuleEarliest,
   type Snapshot,
 } from '../electron/types';
 import { isRuleEligible } from '../electron/eligibility';
+import { sessionFormatLabel, sessionTimeLabel } from '../electron/sessionTiming';
 import { koreanToday, normalizeTitle, validateRule } from '../electron/validation';
 const LABELS: Record<Provider, string> = {
   cgv: 'CGV',
@@ -194,7 +198,8 @@ export default function App() {
                 </h2>
                 <p>
                   저장한 극장과 작품만 확인하고
-                  <br />새 예매가 열리면 앱 알림으로 먼저 알려드려요.
+                  <br />
+                  예매 가능한 상영을 찾으면 앱 알림으로 먼저 알려드려요.
                 </p>
                 <span className="badge violet">로컬 감시</span>{' '}
                 <span className="badge muted">나만의 조건</span>
@@ -258,7 +263,7 @@ export default function App() {
                 감시 목록 보기 <span>↗</span>
               </button>
             )}
-            <p className="hint">첫 성공 조회는 기준선만 저장해요. 그다음 새 상영부터 알려드려요.</p>
+            <p className="hint">첫 성공 조회부터 이미 예매 가능한 상영도 알려드려요.</p>
           </>
         )}
         {tab === '감시 목록' && (
@@ -306,16 +311,16 @@ export default function App() {
                         ↗
                       </button>
                     </div>
-                    <div className="ticketArt" aria-hidden="true">
-                      ▥<span>{rule.format === 'ALL' ? 'ALL SCREENS' : rule.format}</span>
-                    </div>
+                    <PosterBanner rule={rule} />
                     <h3>{rule.movieTitle}</h3>
                     <p>{rule.theaterName}</p>
                     <div className="ruleMeta">
                       {rule.date}
                       <br />
                       {rule.format === 'ALL' ? '모든 포맷' : rule.format} · ID {rule.theaterId}
+                      {rule.shouldNotifyEarliestOnly && <span> · 가장 빠른 회차만 알림</span>}
                     </div>
+                    <EarliestSummary rule={rule} snapshot={snapshot} />
                     <span
                       className={`badge ${snapshot.progress[rule.id]?.error ? 'amber' : rule.isEnabled ? 'green' : 'muted'}`}
                     >
@@ -441,6 +446,36 @@ export default function App() {
                   앱 팝업을 사용할 수 없어요. Discord를 연결해 주세요.
                 </p>
               )}
+            </div>
+            <div className="card settingsCard">
+              <label className="settingRow">
+                <span>
+                  <strong>감시 중 자동 잠자기 방지</strong>
+                  <small>화면이 꺼져도 감시를 이어가요</small>
+                </span>
+                <input
+                  type="checkbox"
+                  aria-label="감시 중 자동 잠자기 방지"
+                  checked={snapshot.settings.shouldKeepAwake === true}
+                  onChange={(event) =>
+                    void action(() =>
+                      window.cinema.updateSettings({ shouldKeepAwake: event.target.checked }),
+                    )
+                  }
+                />
+              </label>
+              <p className="hint">
+                화면이 꺼져도 감시를 이어가도록 자동 잠자기를 막아요. 수동 잠자기·덮개 닫힘·전원
+                꺼짐 중에는 감시할 수 없어요. 배터리 사용량이 늘어날 수 있어요.
+              </p>
+              <p className={snapshot.keepAwakeWarning ? 'errorText' : 'hint'} role="status">
+                {snapshot.keepAwakeWarning ??
+                  (snapshot.isKeepingAwake
+                    ? '자동 잠자기 방지 작동 중'
+                    : snapshot.settings.shouldKeepAwake
+                      ? '실행 가능한 감시가 시작되면 자동 잠자기를 방지해요.'
+                      : '자동 잠자기 방지 꺼짐')}
+              </p>
             </div>
             <form
               className="card settingsCard"
@@ -601,6 +636,164 @@ interface RuleFormProps {
   onCancel(): void;
   onSave(value: RuleInput): Promise<void>;
 }
+const posterRequests = new Map<
+  string,
+  {
+    requestId: string;
+    listeners: Set<(url?: string) => void>;
+    dataUrl?: string;
+    isPending: boolean;
+  }
+>();
+function PosterBanner({ rule }: { rule: Rule }) {
+  const identity = JSON.stringify([rule.provider, rule.movieId ?? normalizeTitle(rule.movieTitle)]);
+  const [image, setImage] = useState<{ identity: string; dataUrl?: string }>();
+  const [failedIdentity, setFailedIdentity] = useState<string>();
+  useEffect(() => {
+    let current = posterRequests.get(identity);
+    if (!current) {
+      current = {
+        requestId: `poster-${crypto.randomUUID()}`,
+        listeners: new Set(),
+        isPending: true,
+      };
+      posterRequests.set(identity, current);
+      const entry = current;
+      void window.cinema
+        .getPoster({
+          provider: rule.provider,
+          movieId: rule.movieId,
+          movieTitle: rule.movieTitle,
+          requestId: entry.requestId,
+        })
+        .then((result) => {
+          if (posterRequests.get(identity) !== entry) return;
+          entry.dataUrl = result.dataUrl;
+          entry.isPending = false;
+          entry.listeners.forEach((listener) => listener(result.dataUrl));
+        })
+        .catch(() => {
+          if (posterRequests.get(identity) !== entry) return;
+          entry.isPending = false;
+          entry.listeners.forEach((listener) => listener());
+        });
+    }
+    const entry = current;
+    const listener = (dataUrl?: string) => setImage({ identity, dataUrl });
+    entry.listeners.add(listener);
+    if (!entry.isPending) listener(entry.dataUrl);
+    return () => {
+      entry.listeners.delete(listener);
+      if (!entry.listeners.size) {
+        if (posterRequests.get(identity) === entry) posterRequests.delete(identity);
+        if (entry.isPending)
+          void window.cinema.cancelPoster({ requestId: entry.requestId }).catch(() => undefined);
+      }
+    };
+  }, [identity, rule.provider, rule.movieId, rule.movieTitle]);
+  const dataUrl =
+    image?.identity === identity && failedIdentity !== identity ? image.dataUrl : undefined;
+  return (
+    <div className={`ticketArt ${dataUrl ? 'hasPoster' : ''}`} aria-hidden="true">
+      {dataUrl ? <img src={dataUrl} alt="" onError={() => setFailedIdentity(identity)} /> : '▥'}
+      <span>{rule.format === 'ALL' ? 'ALL SCREENS' : rule.format}</span>
+    </div>
+  );
+}
+function EarliestSummary({ rule, snapshot }: { rule: Rule; snapshot: Snapshot }) {
+  const [refreshed, setRefreshed] = useState<{
+    snapshot: Snapshot;
+    value?: RuleEarliest;
+    isAfterExpiry: boolean;
+  }>();
+  const summary =
+    refreshed?.snapshot === snapshot ? refreshed.value : snapshot.earliestByRule?.[rule.id];
+  const session = summary?.revision === rule.revision ? summary.session : undefined;
+  const startsAt = session?.startsAt;
+  const readClock = useCallback(() => {
+    const now = Date.now();
+    return (
+      (isRuleEligible(rule, now) ? 1 : 0) | (startsAt !== undefined && startsAt <= now ? 2 : 0)
+    );
+  }, [rule, startsAt]);
+  const subscribeClock = useCallback(
+    (notify: () => void) => {
+      let isActive = true;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const schedule = () => {
+        clearTimeout(timer);
+        if (isActive && startsAt !== undefined && startsAt > Date.now())
+          timer = setTimeout(evaluate, Math.min(2147483647, startsAt - Date.now()));
+      };
+      const evaluate = () => {
+        if (!isActive) return;
+        notify();
+        schedule();
+      };
+      const onFocus = () => flushSync(evaluate);
+      const onVisible = () => {
+        if (document.visibilityState === 'visible') flushSync(evaluate);
+      };
+      schedule();
+      window.addEventListener('focus', onFocus);
+      document.addEventListener('visibilitychange', onVisible);
+      return () => {
+        isActive = false;
+        clearTimeout(timer);
+        window.removeEventListener('focus', onFocus);
+        document.removeEventListener('visibilitychange', onVisible);
+      };
+    },
+    [startsAt],
+  );
+  const clock = useSyncExternalStore(subscribeClock, readClock);
+  const isExpired = (clock & 2) !== 0;
+  useEffect(() => {
+    if (!isExpired || startsAt === undefined) return;
+    let isActive = true;
+    void window.cinema
+      .getSnapshot()
+      .then((value) => {
+        if (
+          !isActive ||
+          !value.rules.some(
+            (item) => item.id === rule.id && item.revision === rule.revision && item.isEnabled,
+          )
+        )
+          return;
+        setRefreshed({ snapshot, value: value.earliestByRule?.[rule.id], isAfterExpiry: true });
+      })
+      .catch(() => undefined);
+    return () => {
+      isActive = false;
+    };
+  }, [isExpired, rule.id, rule.revision, snapshot, startsAt]);
+  const progress = snapshot.progress[rule.id];
+  const isCurrent =
+    (clock & 1) !== 0 &&
+    !snapshot.settings.isPaused &&
+    snapshot.isOnline &&
+    !snapshot.isSuspended &&
+    !snapshot.recoveryError;
+  let message = '첫 조회 후 가장 빠른 회차를 알려드려요';
+  if (!isCurrent) message = '감시가 실행되면 가장 빠른 회차를 확인해요';
+  else if (progress?.error) message = '가장 빠른 회차를 확인하지 못했어요';
+  else if (session && !isExpired)
+    return (
+      <p className="earliestSession">
+        <small>가장 빠른 예매 가능 회차</small>
+        <strong>
+          {sessionTimeLabel(session)} · {sessionFormatLabel(session.format)}
+        </strong>
+        <span>{session.screen}</span>
+      </p>
+    );
+  else if (isExpired || (refreshed?.snapshot === snapshot && refreshed.isAfterExpiry))
+    message = '현재 확인된 미래 회차 없음 · 다음 조회에서 확인해요';
+  else if (summary?.revision === rule.revision) message = '아직 예매 가능한 회차가 없어요';
+  return <p className="earliestSession hint">{message}</p>;
+}
+
 function RuleForm({ value, isBusy, onCancel, onSave }: RuleFormProps) {
   const [form, setForm] = useState<RuleInput>(
     value
@@ -613,6 +806,9 @@ function RuleForm({ value, isBusy, onCancel, onSave }: RuleFormProps) {
           ...(value.movieId === undefined ? {} : { movieId: value.movieId }),
           date: value.date,
           format: value.format,
+          ...(value.shouldNotifyEarliestOnly === undefined
+            ? {}
+            : { shouldNotifyEarliestOnly: value.shouldNotifyEarliestOnly }),
           isEnabled: value.isEnabled,
         }
       : {
@@ -885,6 +1081,18 @@ function RuleForm({ value, isBusy, onCancel, onSave }: RuleFormProps) {
           </select>
         </label>
       </div>
+      <button
+        type="button"
+        aria-pressed={form.shouldNotifyEarliestOnly === true}
+        className={form.shouldNotifyEarliestOnly ? 'primary' : undefined}
+        onClick={() => update('shouldNotifyEarliestOnly', !form.shouldNotifyEarliestOnly)}
+      >
+        가장 빠른 회차만 알림
+      </button>
+      <p className="hint">선택한 포맷에서 처음 확인한 가장 빠른 미래 회차를 날짜별 한 번 알려요.</p>
+      {form.format === 'ALL' && (
+        <p className="hint">모든 포맷은 이 날짜의 예매가 열리면 한 번 알려요.</p>
+      )}
       <label className="toggleLabel">
         <input
           type="checkbox"

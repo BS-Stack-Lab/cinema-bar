@@ -6,12 +6,15 @@ import {
   ipcMain,
   safeStorage,
   powerMonitor,
+  powerSaveBlocker,
+  nativeImage,
   screen,
   shell,
   net,
 } from 'electron';
 import path from 'node:path';
 import os from 'node:os';
+import { mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { Store } from './store.js';
 import { SecretStore } from './secretStore.js';
@@ -23,8 +26,12 @@ import { createCgvTransport } from './cgvTransport.js';
 import { PopupAlerts } from './notifications.js';
 import { createDiscord } from './discord.js';
 import { CatalogService } from './catalog.js';
+import { PosterService } from './posters.js';
+import { PowerPolicy } from './power.js';
 import { validateIpc, validateSender } from './ipc.js';
-import type { CatalogRequest, Provider, RuleInput } from './types.js';
+import { isTrayAtMenuBar, type TraySample } from './trayVisibility.js';
+import { createSmokeRuntime } from './smoke.js';
+import type { CatalogRequest, PosterRequest, Provider, RuleInput } from './types.js';
 const directory = path.dirname(fileURLToPath(import.meta.url));
 const isSmoke = process.env.CINEMA_SMOKE === '1' && process.argv.includes('--cinema-smoke');
 if (isSmoke) {
@@ -32,31 +39,63 @@ if (isSmoke) {
   if (!profile || !path.resolve(profile).startsWith(`${os.tmpdir()}${path.sep}`))
     throw new Error('Smoke profile must be isolated in the temporary directory.');
   app.setPath('userData', profile);
+} else if (process.platform === 'darwin' && app.isPackaged) {
+  app.setName('Cinema Bar');
+  const profile = path.join(app.getPath('appData'), 'Cinema Bar');
+  mkdirSync(profile, { recursive: true });
+  app.setPath('userData', profile);
 }
+const smokeRuntime = isSmoke ? createSmokeRuntime(app) : undefined;
 const hasLock = app.requestSingleInstanceLock();
+smokeRuntime?.recordIdentity(hasLock);
 if (!hasLock) app.quit();
 let window: BrowserWindow;
 let tray: Tray;
 let engine: Engine;
 let popups: PopupAlerts;
 let catalog: CatalogService;
-const traySamples: unknown[] = [];
+let posters: PosterService;
+let power: PowerPolicy;
+const traySamples: TraySample[] = [];
+let isTrayPlaced: boolean | undefined;
+let isDockShowPending = false;
+let lastDockHideAt = 0;
+let dockHideTimer: ReturnType<typeof setTimeout> | undefined;
 let isQuitting = false;
 let pageUrl = '';
-function trayAtMenuBar(bounds: Electron.Rectangle) {
-  return (
-    bounds.width > 0 &&
-    bounds.height > 0 &&
-    screen.getAllDisplays().some((display) => {
-      const topHeight = Math.max(24, display.workArea.y - display.bounds.y);
-      return (
-        bounds.x < display.bounds.x + display.bounds.width &&
-        bounds.x + bounds.width > display.bounds.x &&
-        bounds.y < display.bounds.y + topHeight &&
-        bounds.y + bounds.height > display.bounds.y
-      );
-    })
-  );
+function publishSnapshot() {
+  if (window && !window.isDestroyed())
+    window.webContents.send('cinema:snapshot', engine.snapshot());
+}
+function reconcileDock() {
+  const dock = process.platform === 'darwin' ? app.dock : undefined;
+  if (!dock || isTrayPlaced === undefined) return;
+  if (!isTrayPlaced && dockHideTimer) {
+    clearTimeout(dockHideTimer);
+    dockHideTimer = undefined;
+  }
+  if (isTrayPlaced && dock.isVisible()) {
+    const delay = 1100 - (Date.now() - lastDockHideAt);
+    if (delay > 0) {
+      if (!dockHideTimer)
+        dockHideTimer = setTimeout(() => {
+          dockHideTimer = undefined;
+          reconcileDock();
+        }, delay).unref();
+    } else {
+      lastDockHideAt = Date.now();
+      dock.hide();
+    }
+  } else if (!isTrayPlaced && !dock.isVisible() && !isDockShowPending) {
+    isDockShowPending = true;
+    void dock
+      .show()
+      .then(reconcileDock)
+      .catch(() => undefined)
+      .finally(() => {
+        isDockShowPending = false;
+      });
+  }
 }
 function calculateWindowBounds(area: Electron.Rectangle, anchor?: Electron.Rectangle) {
   const width = Math.min(440, area.width);
@@ -74,7 +113,7 @@ function calculateWindowBounds(area: Electron.Rectangle, anchor?: Electron.Recta
 function showWindow(trayBounds = tray?.getBounds()) {
   if (!window || window.isDestroyed()) return;
   sampleTray();
-  const hasAnchor = trayBounds && trayAtMenuBar(trayBounds);
+  const hasAnchor = trayBounds && isTrayAtMenuBar(trayBounds, screen.getAllDisplays());
   const display = hasAnchor
     ? screen.getDisplayMatching(trayBounds)
     : screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
@@ -92,23 +131,36 @@ function toggleWindow() {
 function sampleTray() {
   if (!tray || tray.isDestroyed()) return;
   const bounds = tray.getBounds();
+  const displays = screen
+    .getAllDisplays()
+    .map(({ id, bounds, workArea, scaleFactor }) => ({ id, bounds, workArea, scaleFactor }));
+  const isPlaced = isTrayAtMenuBar(bounds, displays);
   traySamples.push({
     at: Date.now(),
     bounds,
-    intersectsMenuBar: trayAtMenuBar(bounds),
-    displays: screen
-      .getAllDisplays()
-      .map(({ id, bounds, workArea, scaleFactor }) => ({ id, bounds, workArea, scaleFactor })),
+    intersectsMenuBar: isPlaced,
+    displays,
   });
   if (traySamples.length > 8) traySamples.shift();
+  if (process.platform === 'darwin' && isTrayPlaced !== isPlaced) {
+    isTrayPlaced = isPlaced;
+    engine.trayWarning = isPlaced
+      ? undefined
+      : '메뉴 막대 아이콘 위치를 확인하지 못했어요. Dock의 Cinema Bar에서 다시 열 수 있어요. macOS 시스템 설정 → 메뉴 막대에서 Cinema Bar의 표시 허용을 확인하세요.';
+    publishSnapshot();
+  }
+  reconcileDock();
 }
 app.on('activate', () => showWindow());
 app.on('second-instance', () => showWindow());
 app.on('before-quit', () => {
   isQuitting = true;
+  clearTimeout(dockHideTimer);
   engine?.stop();
   popups?.dispose();
   catalog?.dispose();
+  posters?.dispose();
+  power?.dispose();
 });
 app.on('window-all-closed', () => undefined);
 if (hasLock)
@@ -121,14 +173,16 @@ if (hasLock)
       }
       const store = new Store(app.getPath('userData'));
       await store.load();
-      const secrets = new SecretStore({
-        isAvailable: () =>
-          safeStorage.isEncryptionAvailable() &&
-          (process.platform !== 'linux' ||
-            safeStorage.getSelectedStorageBackend() !== 'basic_text'),
-        encrypt: (value) => safeStorage.encryptString(value),
-        decrypt: (value) => safeStorage.decryptString(value),
-      });
+      const secrets = new SecretStore(
+        smokeRuntime?.codec ?? {
+          isAvailable: () =>
+            safeStorage.isEncryptionAvailable() &&
+            (process.platform !== 'linux' ||
+              safeStorage.getSelectedStorageBackend() !== 'basic_text'),
+          encrypt: (value) => safeStorage.encryptString(value),
+          decrypt: (value) => safeStorage.decryptString(value),
+        },
+      );
       let mockLogin = false;
       const loginWrites: boolean[] = [];
       const login = new LoginSettings(
@@ -152,6 +206,14 @@ if (hasLock)
       const providers = createProviders(fetch, cgvTransport);
       const catalogFetch = isSmoke ? (await import('./smoke.js')).smokeCatalogFetch : fetch;
       catalog = new CatalogService(catalogFetch, isSmoke ? catalogFetch : cgvTransport);
+      posters = new PosterService(
+        catalog,
+        (bytes) => {
+          const image = nativeImage.createFromBuffer(Buffer.from(bytes));
+          return image.isEmpty() ? undefined : image.getSize();
+        },
+        isSmoke ? (await import('./smoke.js')).smokePosterFetch : cgvTransport,
+      );
       popups = new PopupAlerts();
       engine = new Engine(
         store,
@@ -166,17 +228,33 @@ if (hasLock)
               deliver: async () => ({ kind: 'sent' }),
               notifyLocal: async () => ({ kind: 'requested' }),
               isLocalAlertSupported: popups.isSupported,
+              isLocalAlertReady: popups.isReady,
             }
           : {
               providers,
               deliver: createDiscord(),
               notifyLocal: popups.notify,
               isLocalAlertSupported: popups.isSupported,
+              isLocalAlertReady: popups.isReady,
             },
       );
-      if (process.platform === 'darwin')
-        engine.trayWarning =
-          '메뉴 막대 아이콘 표시를 확인하지 못했어요. Dock의 Cinema Bar에서 다시 열 수 있어요. macOS 시스템 설정 → 메뉴 막대의 표시 허용 목록을 확인하세요. 항목이 없으면 Dock을 이용하세요.';
+      power = new PowerPolicy(
+        powerSaveBlocker,
+        () => ({
+          settings: store.state.settings,
+          rules: store.state.rules,
+          isStarted: engine.isStarted,
+          isOnline: engine.isOnline,
+          isSuspended: engine.isSuspended,
+          recoveryError: store.recoveryError,
+        }),
+        (state) => {
+          engine.isKeepingAwake = state.isKeepingAwake;
+          engine.keepAwakeWarning = state.keepAwakeWarning;
+          publishSnapshot();
+        },
+      );
+      engine.subscribe(power.reconcile);
       try {
         await login.initialize();
       } catch {
@@ -220,9 +298,11 @@ if (hasLock)
       tray = new Tray(icon, '8eb79195-4284-4aa7-86f5-80d3c029fdbd');
       if (process.platform === 'darwin') tray.setTitle('CB');
       sampleTray();
-      const trayTimer = setTimeout(sampleTray, 750);
-      trayTimer.unref();
-      window.on('closed', () => catalog.dispose());
+      for (const delay of [750, 2000]) setTimeout(sampleTray, delay).unref();
+      window.on('closed', () => {
+        catalog.dispose();
+        posters.dispose();
+      });
       const onDisplayChange = () => {
         sampleTray();
         if (window && !window.isDestroyed() && window.isVisible()) showWindow();
@@ -240,10 +320,10 @@ if (hasLock)
           ]),
         ),
       );
-      engine.subscribe(() => {
-        if (!window.isDestroyed()) window.webContents.send('cinema:snapshot', engine.snapshot());
-      });
+      engine.subscribe(publishSnapshot);
       for (const channel of [
+        'getPoster',
+        'cancelPoster',
         'getCatalog',
         'cancelCatalog',
         'getSnapshot',
@@ -268,6 +348,11 @@ if (hasLock)
           );
           const value = validateIpc(channel, payload);
           switch (channel) {
+            case 'getPoster':
+              return posters.get(value as PosterRequest);
+            case 'cancelPoster':
+              posters.cancel((value as { requestId: string }).requestId);
+              return;
             case 'getCatalog':
               return catalog.get(value as CatalogRequest);
             case 'cancelCatalog':
@@ -290,6 +375,7 @@ if (hasLock)
                 intervalSeconds?: number;
                 shouldStartAtLogin?: boolean;
                 shouldNotifyLocally?: boolean;
+                shouldKeepAwake?: boolean;
               };
               if (settings.shouldStartAtLogin !== undefined) {
                 await login.apply(settings.shouldStartAtLogin);
@@ -335,6 +421,8 @@ if (hasLock)
           loginWrites,
           securityPreferences,
           popups,
+          power,
+          smokeRuntime: smokeRuntime!,
         });
       } else showWindow();
     })

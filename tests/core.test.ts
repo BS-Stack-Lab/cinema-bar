@@ -232,39 +232,87 @@ describe('QA provider and predicate boundaries', () => {
   });
 });
 describe('QA engine durable state', () => {
-  it('first-baseline-errors: errors never seed baseline; first revision is quiet', async () => {
+  it('first-success-after-errors: errors never seed baseline or consume the first bookable alert', async () => {
     const f = await fixture();
     f.provider.mockRejectedValueOnce(new ProviderError('공급자 오류'));
     await f.engine.refresh();
     expect(f.store.state.progress[rule.id].baseline).toBeUndefined();
     expect(f.store.state.progress[rule.id].lastSuccess).toBeUndefined();
-    await f.engine.refresh();
     expect(f.deliver).not.toHaveBeenCalled();
+    await f.engine.refresh();
+    expect(f.deliver).toHaveBeenCalledTimes(1);
+    expect(f.deliver).toHaveBeenCalledWith(expect.any(String), session, expect.any(AbortSignal));
+    const baseline = structuredClone(f.store.state.progress[rule.id].baseline);
     const before = f.store.state.progress[rule.id].lastSuccess;
     f.provider.mockRejectedValueOnce(new Error('raw provider content'));
     await f.engine.refresh();
     expect(f.store.state.progress[rule.id].lastSuccess).toBe(before);
+    expect(f.store.state.progress[rule.id].baseline).toEqual(baseline);
     expect(f.store.state.progress[rule.id].error).not.toContain('raw');
+    f.advance(1000);
     f.setSessions([session, { ...session, showingId: 'new' }]);
     await f.engine.refresh();
-    expect(f.deliver).toHaveBeenCalledTimes(1);
+    expect(f.deliver).toHaveBeenCalledTimes(2);
     await f.engine.refresh();
-    expect(f.deliver).toHaveBeenCalledTimes(1);
+    expect(f.deliver).toHaveBeenCalledTimes(2);
     const { revision: _r, movieId: _m, ...input } = f.store.state.rules[0];
     void _r;
     void _m;
     await f.engine.saveRule({ ...input, movieTitle: '별의 영화' });
     await settle(f.engine);
-    expect(f.deliver).toHaveBeenCalledTimes(1);
+    expect(f.deliver).toHaveBeenCalledTimes(2);
     expect(f.store.state.rules[0].revision).toBe(2);
   });
+  it('first-query eligibility excludes unavailable and inexact sessions before alerting an exact match', async () => {
+    const f = await fixture();
+    f.setSessions([{ ...session, movieTitle: '다른 작품' }]);
+    await f.engine.refresh();
+    expect(f.deliver).not.toHaveBeenCalled();
+    await f.store.mutate((s) => {
+      s.rules[0].movieId = session.movieId;
+    });
+    f.setSessions([
+      { ...session, isBookable: false },
+      { ...session, provider: 'cgv' },
+      { ...session, theaterId: 'other-theater' },
+      { ...session, movieId: 'other-movie' },
+      { ...session, date: '2099-01-02' },
+      { ...session, format: 'IMAX' },
+    ]);
+    await f.engine.refresh();
+    expect(f.deliver).not.toHaveBeenCalled();
+    expect(f.store.state.outbox).toHaveLength(0);
+    expect(f.store.state.localOutbox).toHaveLength(0);
+    expect(f.store.state.progress[rule.id].count).toBe(0);
+    f.setSessions([session]);
+    await f.engine.refresh();
+    expect(f.deliver).toHaveBeenCalledTimes(1);
+  });
+  it.each([
+    ['disabled', { isEnabled: false }],
+    ['expired', { date: '2098-12-31' }],
+  ])(
+    'first-query eligibility skips %s rules with bookable data available',
+    async (_name, patch) => {
+      const f = await fixture();
+      await f.store.mutate((s) => {
+        Object.assign(s.rules[0], patch);
+      });
+      await f.engine.refresh();
+      expect(f.provider).not.toHaveBeenCalled();
+      expect(f.deliver).not.toHaveBeenCalled();
+      expect(f.store.state.progress[rule.id]).toBeUndefined();
+    },
+  );
   it('dedupe-and-old-rule-work: overlapping rules, merged refresh, edit/delete and pause', async () => {
     const f = await fixture();
     await f.store.mutate((s) => s.rules.push({ ...rule, id: 'rule-2' }));
     await f.engine.refresh();
+    expect(f.deliver).toHaveBeenCalledTimes(1);
+    f.advance(1000);
     f.setSessions([session, { ...session, showingId: 'new' }]);
     await Promise.all([f.engine.refresh(), f.engine.refresh()]);
-    expect(f.deliver).toHaveBeenCalledTimes(1);
+    expect(f.deliver).toHaveBeenCalledTimes(2);
     let release!: (value: Session[]) => void;
     f.provider.mockImplementationOnce(
       () =>
@@ -303,8 +351,9 @@ describe('QA engine durable state', () => {
   });
   it('secret-revision-regression: replace during delayed send never restores old pending', async () => {
     const f = await fixture();
+    f.setSessions([]);
     await f.engine.refresh();
-    f.setSessions([session, { ...session, showingId: 'new' }]);
+    f.setSessions([{ ...session, showingId: 'new' }]);
     let release!: (value: DeliveryResult) => void;
     f.deliver.mockImplementationOnce(
       () =>
@@ -314,6 +363,8 @@ describe('QA engine durable state', () => {
     );
     const refresh = f.engine.refresh();
     while (!release) await new Promise((resolve) => setTimeout(resolve, 1));
+    // Isolate the obsolete send from a valid new-webhook discovery on the next query.
+    f.setSessions([]);
     await f.engine.saveWebhook(webhook('z'));
     release({ kind: 'sent' });
     await refresh;
@@ -325,14 +376,11 @@ describe('QA engine durable state', () => {
     expect(restart.state.secret.revision).toBe(2);
     expect(restart.state.outbox).toHaveLength(0);
   });
-  it('durable-outbox-restart: production discovery persists B before delivery and recovers one success', async () => {
+  it('durable-first-query-outbox-restart: first discovery persists before delivery and recovers one success', async () => {
     const f = await fixture();
-    await f.engine.refresh();
-    expect(f.deliver).not.toHaveBeenCalled();
-    expect(f.store.state.outbox).toHaveLength(0);
     const discovered = { ...session, showingId: 'discovered-b' };
     const discoveredId = sessionIdentity(discovered);
-    f.setSessions([session, discovered]);
+    f.setSessions([discovered]);
     let releaseDelivery!: (result: DeliveryResult) => void;
     let signalDeliveryStarted!: () => void;
     const deliveryStarted = new Promise<void>((resolve) => {
@@ -396,6 +444,7 @@ describe('QA engine durable state', () => {
   });
   it('outbox-retention: 100 item limit, expiry, stale rule revisions and bounded history', async () => {
     const f = await fixture();
+    f.setSessions([]);
     await f.store.mutate((s) => {
       s.secret.isTerminal = true;
       s.outbox = [
@@ -413,6 +462,7 @@ describe('QA engine durable state', () => {
   });
   it('discord-rate-and-terminal-errors: deadlines, backoff, permanent stop and replacement', async () => {
     const f = await fixture();
+    f.setSessions([]);
     await f.store.mutate((s) => s.outbox.push(pending('q')));
     f.deliver.mockResolvedValueOnce({ kind: 'retry', delayMs: 120000, detail: 'rate limit' });
     await f.engine.refresh();
@@ -566,6 +616,7 @@ describe('QA deadline and commit regressions', () => {
   });
   it('Discord 429 global deadline survives restart with another queued item', async () => {
     const f = await fixture();
+    f.setSessions([]);
     await f.store.mutate((s) => {
       s.outbox = [pending('q1'), pending('q2')];
     });

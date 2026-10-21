@@ -32,7 +32,7 @@ const outputs = await packager({
   dir: staging,
   name: 'Cinema Bar',
   icon: path.resolve(process.platform === 'linux' ? 'assets/appIcon.png' : 'assets/appIcon'),
-  appBundleId: 'local.cinemabar.desktop',
+  appBundleId: 'dev.cinemabar.desktop',
   out: 'release',
   overwrite: true,
   platform: process.platform,

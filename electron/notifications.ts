@@ -1,12 +1,14 @@
 import { BrowserWindow, screen, type WebPreferences } from 'electron';
 import type { LocalAlertResult, Session } from './types.js';
+import { alertHeading } from './dayAlerts.js';
+import { sessionFormatLabel, sessionTimeLabel } from './sessionTiming.js';
 const escapeHtml = (value: string) =>
   value.replace(
     /[&<>"']/gu,
     (letter) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[letter]!,
   );
 export function popupHtml(session: Session) {
-  return `<!doctype html><html lang="ko"><head><meta charset="UTF-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'none'; img-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'"><title>Cinema Bar 알림</title><style>html{background:#262628;color:#eee9ff;font:14px -apple-system,BlinkMacSystemFont,sans-serif}body{margin:0;padding:36px 20px 16px;border-left:4px solid #c5b5fc}small{color:#c5b5fc;font-size:10px;letter-spacing:1.5px}h1{font-size:18px;margin:8px 0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}p{margin:5px 0;color:#d6d0df;font-size:12px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}</style></head><body><small>CINEMA BAR · 새 예매 가능 상영</small><h1>${escapeHtml(session.movieTitle.slice(0, 120))}</h1><p>${escapeHtml(session.theaterName.slice(0, 80))} · ${escapeHtml(session.screen.slice(0, 80))}</p><p>${escapeHtml(session.date)} ${escapeHtml(session.time)} (한국) · ${escapeHtml(session.format)}</p></body></html>`;
+  return `<!doctype html><html lang="ko"><head><meta charset="UTF-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'none'; img-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'"><title>Cinema Bar 알림</title><style>html{background:#262628;color:#eee9ff;font:14px -apple-system,BlinkMacSystemFont,sans-serif}body{margin:0;padding:36px 20px 16px;border-left:4px solid #c5b5fc}small{color:#c5b5fc;font-size:10px;letter-spacing:1.5px}h1{font-size:18px;margin:8px 0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}p{margin:5px 0;color:#d6d0df;font-size:12px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}</style></head><body><small>CINEMA BAR · ${escapeHtml(session.notificationKind ? alertHeading(session) : '새 예매 가능 상영')}</small><h1>${escapeHtml(session.movieTitle.slice(0, 120))}</h1><p>${escapeHtml(session.theaterName.slice(0, 80))} · ${escapeHtml(session.screen.slice(0, 80))}</p><p>${escapeHtml(session.date)} ${session.notificationKind === 'dayOpen' ? '가장 빠른 회차 ' : ''}${escapeHtml(sessionTimeLabel(session))} (한국) · ${escapeHtml(sessionFormatLabel(session.format))}</p></body></html>`;
 }
 export class PopupAlerts {
   private entries: { window: BrowserWindow; timer?: ReturnType<typeof setTimeout> }[] = [];
@@ -28,6 +30,18 @@ export class PopupAlerts {
     return this.entries.map((entry) => entry.window);
   }
   isSupported = () => !this.isDisposed && screen.getAllDisplays().length > 0;
+  private capacity() {
+    if (!this.isSupported()) return 0;
+    const area = screen.getPrimaryDisplay().workArea;
+    const height = Math.min(164, area.height - 32);
+    return area.width < 240 || height < 120
+      ? 0
+      : Math.max(1, Math.min(3, Math.floor((area.height - 20) / (height + 12))));
+  }
+  isReady = () => {
+    const limit = this.capacity();
+    return limit === 0 || this.entries.length < limit;
+  };
   private arrange() {
     if (this.isDisposed) return;
     if (!screen.getAllDisplays().length) {
@@ -36,10 +50,7 @@ export class PopupAlerts {
     }
     const area = screen.getPrimaryDisplay().workArea;
     const height = Math.min(164, area.height - 32);
-    const limit =
-      area.width < 240 || height < 120
-        ? 0
-        : Math.max(1, Math.min(3, Math.floor((area.height - 20) / (height + 12))));
+    const limit = this.capacity();
     while (this.entries.length > limit) this.evictOldest();
     this.entries.forEach(({ window }, index) => {
       window.setSize(Math.min(360, area.width - 32), height);
@@ -63,7 +74,7 @@ export class PopupAlerts {
     const area = screen.getPrimaryDisplay().workArea;
     const height = Math.min(164, area.height - 32);
     if (area.width < 240 || height < 120) return { kind: 'unsupported' };
-    const limit = Math.max(1, Math.min(3, Math.floor((area.height - 20) / (height + 12))));
+    const limit = this.capacity();
     while (this.entries.length >= limit) this.evictOldest();
     let popup: BrowserWindow;
     try {

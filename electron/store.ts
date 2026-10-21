@@ -13,6 +13,7 @@ export const createState = (): State => ({
     shouldStartAtLogin: true,
     hasConfiguredLogin: false,
     shouldNotifyLocally: true,
+    shouldKeepAwake: false,
   },
   progress: {},
   secret: { revision: 0, isTerminal: false },

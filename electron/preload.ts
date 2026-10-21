@@ -1,6 +1,8 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { CinemaApi, Snapshot } from './types.js';
 const api: CinemaApi = {
+  getPoster: (input) => ipcRenderer.invoke('cinema:getPoster', input),
+  cancelPoster: (input) => ipcRenderer.invoke('cinema:cancelPoster', input),
   getCatalog: (input) => ipcRenderer.invoke('cinema:getCatalog', input),
   cancelCatalog: (input) => ipcRenderer.invoke('cinema:cancelCatalog', input),
   getSnapshot: () => ipcRenderer.invoke('cinema:getSnapshot'),

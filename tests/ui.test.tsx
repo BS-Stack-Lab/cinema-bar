@@ -35,6 +35,8 @@ function mount(snapshot = empty) {
   }));
   const api = {
     getSnapshot: vi.fn(async () => snapshot),
+    getPoster: vi.fn(async () => ({})),
+    cancelPoster: vi.fn(async () => undefined),
     getCatalog: vi.fn(async ({ provider }) => catalogFixture(provider)),
     cancelCatalog: vi.fn(async () => undefined),
     onSnapshot: vi.fn(() => () => undefined),
@@ -59,6 +61,7 @@ describe('QA accessible renderer', () => {
     mount();
     await screen.findByRole('heading', { name: /Cinema Bar/ });
     expect(screen.getByRole('button', { name: /첫 감시 추가/ })).toBeTruthy();
+    expect(screen.getByText('첫 성공 조회부터 이미 예매 가능한 상영도 알려드려요.')).toBeTruthy();
     const user = userEvent.setup();
     const dashboard = screen.getByRole('tab', { name: '대시보드' });
     dashboard.focus();
@@ -141,6 +144,44 @@ describe('QA accessible renderer', () => {
     fireEvent.submit(screen.getByRole('button', { name: '안전하게 연결' }).closest('form')!);
     await waitFor(() => expect(api.saveWebhook).toHaveBeenCalled());
     expect((screen.getByLabelText('개인 웹훅 주소') as HTMLInputElement).value).toBe('');
+  });
+  it('earliest toggle supports click, Enter and Space without submitting and persists through editing and remount', async () => {
+    const user = userEvent.setup();
+    const { saveRule } = mount({ ...empty, rules: [rule] });
+    await screen.findByRole('heading', { name: /Cinema Bar/ });
+    await user.click(screen.getByRole('tab', { name: '감시 목록' }));
+    await user.click(screen.getByRole('button', { name: `${rule.movieTitle} 수정` }));
+    let toggle = screen.getByRole('button', { name: '가장 빠른 회차만 알림' });
+    expect(toggle.getAttribute('type')).toBe('button');
+    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+    toggle.focus();
+    await user.keyboard(' ');
+    expect(toggle.getAttribute('aria-pressed')).toBe('true');
+    expect(toggle.classList.contains('primary')).toBe(true);
+    await user.keyboard('{Enter}');
+    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+    await user.click(toggle);
+    expect(saveRule).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: '감시 저장' }));
+    await waitFor(() => expect(saveRule).toHaveBeenCalledTimes(1));
+    expect(saveRule.mock.calls[0][0].shouldNotifyEarliestOnly).toBe(true);
+    expect(screen.getByText(/· 가장 빠른 회차만 알림/)).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: `${rule.movieTitle} 수정` }));
+    toggle = screen.getByRole('button', { name: '가장 빠른 회차만 알림' });
+    expect(toggle.getAttribute('aria-pressed')).toBe('true');
+    await user.click(screen.getByRole('button', { name: '취소' }));
+    const saved = { ...rule, ...saveRule.mock.calls[0][0] };
+    cleanup();
+    const remounted = mount({ ...empty, rules: [saved] });
+    await screen.findByRole('heading', { name: /Cinema Bar/ });
+    await user.click(screen.getByRole('tab', { name: '감시 목록' }));
+    await user.click(screen.getByRole('button', { name: `${rule.movieTitle} 수정` }));
+    toggle = screen.getByRole('button', { name: '가장 빠른 회차만 알림' });
+    expect(toggle.getAttribute('aria-pressed')).toBe('true');
+    await user.click(toggle);
+    await user.click(screen.getByRole('button', { name: '감시 저장' }));
+    await waitFor(() => expect(remounted.saveRule).toHaveBeenCalledTimes(1));
+    expect(remounted.saveRule.mock.calls[0][0].shouldNotifyEarliestOnly).toBe(false);
   });
   it('empty-and-error-states: distinct provider/offline/pause/webhook labels and timestamps', () => {
     const current = {
@@ -451,5 +492,232 @@ describe('official catalog selection and legacy compatibility', () => {
     expect((screen.getByLabelText('극장') as HTMLSelectElement).value).toBe('0013');
     fireEvent.click(screen.getByRole('button', { name: '취소' }));
     expect(api.cancelCatalog).toHaveBeenCalledWith({ requestId: expect.any(String) });
+  });
+});
+
+describe('poster cards, exact expiry and optional keep-awake controls', () => {
+  const summarySnapshot = (startsAt = NOW + 15): Snapshot => ({
+    ...empty,
+    rules: [{ ...rule, format: 'ALL' }],
+    progress: {
+      [rule.id]: { revision: 1, lastSuccess: NOW, failures: 0, count: 1, nextAt: NOW + 120000 },
+    },
+    earliestByRule: {
+      [rule.id]: {
+        revision: 1,
+        checkedAt: NOW,
+        session: {
+          identity: 'first',
+          startsAt,
+          date: rule.date,
+          time: '10:00',
+          format: 'IMAX',
+          screen: 'IMAX관',
+        },
+      },
+    },
+  });
+  it('shows a shared decorative poster for saved identities and preserves the format and fallback', async () => {
+    const snapshot = {
+      ...empty,
+      rules: [
+        { ...rule, movieId: 'movie-1', format: 'ALL' as const },
+        { ...rule, id: 'duplicate', movieId: 'movie-1' },
+      ],
+    };
+    const { api } = mount(snapshot);
+    vi.mocked(api.getPoster).mockResolvedValue({ dataUrl: 'data:image/png;base64,AAAA' });
+    await screen.findByRole('heading', { name: /Cinema Bar/ });
+    fireEvent.click(screen.getByRole('tab', { name: '감시 목록' }));
+    await waitFor(() => expect(document.querySelectorAll('.ticketArt img').length).toBe(2));
+    expect(api.getPoster).toHaveBeenCalledTimes(1);
+    expect(api.getPoster).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: rule.provider,
+        movieId: 'movie-1',
+        movieTitle: rule.movieTitle,
+      }),
+    );
+    expect(screen.getByText('ALL SCREENS')).toBeTruthy();
+    const image = document.querySelector<HTMLImageElement>('.ticketArt img')!;
+    expect(image.alt).toBe('');
+    fireEvent.error(image);
+    expect(document.querySelectorAll('.ticketArt img').length).toBe(1);
+    expect(screen.getAllByRole('button', { name: `${rule.movieTitle} 삭제` })).toHaveLength(2);
+    fireEvent.click(screen.getByRole('tab', { name: '대시보드' }));
+    expect(api.cancelPoster).not.toHaveBeenCalled();
+  });
+  it('cancels obsolete identity waiters and ignores late images after rule change and tab unmount', async () => {
+    const snapshot = { ...empty, rules: [{ ...rule, movieId: 'old' }] };
+    const { api } = mount(snapshot);
+    let resolve!: (value: { dataUrl: string }) => void;
+    vi.mocked(api.getPoster)
+      .mockImplementationOnce(
+        () =>
+          new Promise((done) => {
+            resolve = done;
+          }),
+      )
+      .mockResolvedValue({ dataUrl: 'data:image/png;base64,BBBB' });
+    await screen.findByRole('heading', { name: /Cinema Bar/ });
+    fireEvent.click(screen.getByRole('tab', { name: '감시 목록' }));
+    await waitFor(() => expect(api.getPoster).toHaveBeenCalledTimes(1));
+    const listener = vi.mocked(api.onSnapshot).mock.calls[0][0];
+    await act(async () =>
+      listener({ ...snapshot, rules: [{ ...rule, revision: 2, movieId: 'new' }] }),
+    );
+    await waitFor(() => expect(api.cancelPoster).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(document.querySelector<HTMLImageElement>('.ticketArt img')?.src).toContain('BBBB'),
+    );
+    await act(async () => resolve({ dataUrl: 'data:image/png;base64,AAAA' }));
+    expect(document.querySelector<HTMLImageElement>('.ticketArt img')?.src).toContain('BBBB');
+    fireEvent.click(screen.getByRole('tab', { name: '설정' }));
+    expect(document.querySelector('.ticketArt')).toBeNull();
+  });
+  it('shows pending, empty, provider failure and inactive states independently', async () => {
+    const snapshot = { ...empty, rules: [rule] };
+    const { api } = mount(snapshot);
+    await screen.findByRole('heading', { name: /Cinema Bar/ });
+    fireEvent.click(screen.getByRole('tab', { name: '감시 목록' }));
+    expect(screen.getByText('첫 조회 후 가장 빠른 회차를 알려드려요')).toBeTruthy();
+    const listener = vi.mocked(api.onSnapshot).mock.calls[0][0];
+    const success = {
+      ...summarySnapshot(),
+      earliestByRule: { [rule.id]: { revision: 1, checkedAt: NOW } },
+    };
+    await act(async () => listener(success));
+    expect(screen.getByText('아직 예매 가능한 회차가 없어요')).toBeTruthy();
+    await act(async () =>
+      listener({
+        ...success,
+        progress: { [rule.id]: { ...success.progress[rule.id], error: 'HTTP 403' } },
+      }),
+    );
+    expect(screen.getByText('가장 빠른 회차를 확인하지 못했어요')).toBeTruthy();
+    await act(async () => listener({ ...success, isOnline: false }));
+    expect(screen.getByText('감시가 실행되면 가장 빠른 회차를 확인해요')).toBeTruthy();
+  });
+  it('expires at the exact start, reads known next candidates without provider refresh, then shows no future candidate', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    const snapshot = summarySnapshot();
+    const { api } = mount(snapshot);
+    await act(async () => undefined);
+    fireEvent.click(screen.getByRole('tab', { name: '감시 목록' }));
+    const next = summarySnapshot(NOW + 30);
+    next.earliestByRule![rule.id].session = {
+      ...next.earliestByRule![rule.id].session!,
+      identity: 'next',
+      time: '12:00',
+      format: 'DOLBY',
+    };
+    vi.mocked(api.getSnapshot)
+      .mockResolvedValueOnce(next)
+      .mockResolvedValueOnce({
+        ...next,
+        earliestByRule: { [rule.id]: { revision: 1, checkedAt: NOW } },
+      });
+    expect(screen.getByText('10:00 · IMAX')).toBeTruthy();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(14);
+    });
+    expect(screen.getByText('10:00 · IMAX')).toBeTruthy();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(screen.queryByText('10:00 · IMAX')).toBeNull();
+    expect(screen.getByText('12:00 · DOLBY')).toBeTruthy();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15);
+    });
+    expect(screen.queryByText('12:00 · DOLBY')).toBeNull();
+    expect(screen.getByText('현재 확인된 미래 회차 없음 · 다음 조회에서 확인해요')).toBeTruthy();
+    expect(api.getSnapshot).toHaveBeenCalledTimes(3);
+    expect(api.refresh).not.toHaveBeenCalled();
+    cleanup();
+    expect(vi.getTimerCount()).toBe(0);
+    vi.useRealTimers();
+  });
+  it('filters an already expired initial value and ignores old timer/request replies across revisions', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    const snapshot = summarySnapshot(NOW - 1);
+    const { api } = mount(snapshot);
+    let resolve!: (value: Snapshot) => void;
+    vi.mocked(api.getSnapshot).mockImplementationOnce(
+      () =>
+        new Promise((done) => {
+          resolve = done;
+        }),
+    );
+    await act(async () => undefined);
+    fireEvent.click(screen.getByRole('tab', { name: '감시 목록' }));
+    await act(async () => undefined);
+    expect(screen.queryByText('10:00 · IMAX')).toBeNull();
+    const updated = summarySnapshot(NOW + 1000);
+    updated.rules = [{ ...updated.rules[0], revision: 2 }];
+    updated.earliestByRule![rule.id] = {
+      ...updated.earliestByRule![rule.id],
+      revision: 2,
+      session: { ...updated.earliestByRule![rule.id].session!, time: '13:00', format: 'UNKNOWN' },
+    };
+    const listener = vi.mocked(api.onSnapshot).mock.calls[0][0];
+    await act(async () => listener(updated));
+    expect(screen.getByText('13:00 · 포맷 미확인')).toBeTruthy();
+    if (resolve) await act(async () => resolve(snapshot));
+    expect(screen.getByText('13:00 · 포맷 미확인')).toBeTruthy();
+    fireEvent.click(screen.getByRole('tab', { name: '설정' }));
+    expect(vi.getTimerCount()).toBe(0);
+    vi.useRealTimers();
+  });
+  it('reevaluates actual time on focus and visible restoration without reviving a stale start', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    const snapshot = summarySnapshot(NOW + 1000);
+    const { api } = mount(snapshot);
+    await act(async () => undefined);
+    fireEvent.click(screen.getByRole('tab', { name: '감시 목록' }));
+    vi.mocked(api.getSnapshot).mockResolvedValue({
+      ...snapshot,
+      earliestByRule: { [rule.id]: { revision: 1, checkedAt: NOW } },
+    });
+    vi.setSystemTime(NOW + 2000);
+    fireEvent(window, new Event('focus'));
+    expect(screen.queryByText('10:00 · IMAX')).toBeNull();
+    await act(async () => undefined);
+    const visible = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
+    fireEvent(document, new Event('visibilitychange'));
+    expect(screen.queryByText('10:00 · IMAX')).toBeNull();
+    visible.mockRestore();
+    fireEvent.click(screen.getByRole('tab', { name: '대시보드' }));
+    fireEvent.click(screen.getByRole('tab', { name: '감시 목록' }));
+    expect(screen.queryByText('10:00 · IMAX')).toBeNull();
+    cleanup();
+    vi.useRealTimers();
+  });
+  it('saves only the keep-awake strict boolean and reports the native state and limits', async () => {
+    const { api } = mount({ ...empty, isKeepingAwake: true });
+    await screen.findByRole('heading', { name: /Cinema Bar/ });
+    fireEvent.click(screen.getByRole('tab', { name: '설정' }));
+    const toggle = screen.getByRole('checkbox', { name: '감시 중 자동 잠자기 방지' });
+    expect((toggle as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(toggle);
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ shouldKeepAwake: true }));
+    expect(screen.getByText('자동 잠자기 방지 작동 중')).toBeTruthy();
+    expect(screen.getByText(/수동 잠자기·덮개 닫힘·전원 꺼짐/)).toBeTruthy();
+    expect(screen.getByText(/배터리 사용량/)).toBeTruthy();
+    await act(async () =>
+      vi.mocked(api.onSnapshot).mock.calls[0][0]({
+        ...empty,
+        settings: { ...empty.settings, shouldKeepAwake: true },
+        keepAwakeWarning: 'native failure',
+      }),
+    );
+    expect(screen.getByText('native failure')).toBeTruthy();
+    fireEvent.click(screen.getByRole('checkbox', { name: '감시 중 자동 잠자기 방지' }));
+    await waitFor(() =>
+      expect(api.updateSettings).toHaveBeenCalledWith({ shouldKeepAwake: false }),
+    );
   });
 });

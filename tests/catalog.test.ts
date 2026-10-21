@@ -35,7 +35,12 @@ describe('official public catalog normalization', () => {
     expect(result.regions).toHaveLength(2);
     expect(result.theaters).toHaveLength(4);
     expect(result.theaters[0]).toEqual({ id: '0056', name: '강남', regionId: '01' });
-    expect(result.movies[0]).toEqual({ id: '30001367', title: '극장판 치이카와-인어 섬의 비밀' });
+    expect(result.movies[0]).toEqual({
+      id: '30001367',
+      title: '극장판 치이카와-인어 섬의 비밀',
+      posterUrl:
+        'https://cdn.cgv.co.kr/cgvpomsfilm/Movie/Thumbnail/Poster/030001/30001367/30001367_320.jpg',
+    });
     expect(Object.keys(result).sort()).toEqual([
       'fetchedAt',
       'movies',
@@ -308,5 +313,34 @@ describe('narrow catalog IPC input', () => {
     expect(validateIpc('getCatalog', request('a', true))).toEqual(request('a', true));
     expect(validateIpc('cancelCatalog', { requestId: 'a' })).toEqual({ requestId: 'a' });
     expect(() => validateIpc('cancelCatalog', { requestId: 'a', provider: 'cgv' })).toThrow();
+  });
+});
+
+describe('optional official poster metadata', () => {
+  it('normalizes observed three-provider fields without making optional images a catalog requirement', () => {
+    expect(parseCatalog('megabox', fixture.megabox, NOW).movies[0].posterUrl).toBe(
+      'https://img.megabox.co.kr/SharedImg/2026/10/14/ftMynesIgnNFPtPj59KlhsG6ifaruRgW_150.png',
+    );
+    expect(parseCatalog('lottecinema', fixture.lottecinema, NOW).movies[0].posterUrl).toBe(
+      'https://cf.lottecinema.co.kr/Media/MovieFile/MovieImg/202607/24128_503_1.jpg',
+    );
+    expect(
+      parseCatalog('megabox', fixture.megabox, NOW).movies.find((movie) => movie.id === '26062100')
+        ?.posterUrl,
+    ).toContain('_150.jpg');
+    const malformed = structuredClone(fixture.cgvMovies);
+    malformed.data[0].i320Fnm = 'https://evil.test/a.jpg';
+    expect(
+      parseCatalog('cgv', fixture.cgvRegions, NOW, malformed).movies[0].posterUrl,
+    ).toBeUndefined();
+    const conflict = structuredClone(fixture.megabox);
+    conflict.crtnMovieList[0].movieNm = 'different';
+    expect(() => parseCatalog('megabox', conflict, NOW)).toThrow();
+    const reverse = structuredClone(fixture.megabox);
+    reverse.movieList = [...reverse.movieList].reverse();
+    expect(
+      parseCatalog('megabox', reverse, NOW).movies.find((movie) => movie.id === '26062100')
+        ?.posterUrl,
+    ).toContain('_150.jpg');
   });
 });

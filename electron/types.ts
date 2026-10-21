@@ -12,6 +12,7 @@ export interface RuleInput {
   date: string;
   format: Format;
   isEnabled: boolean;
+  shouldNotifyEarliestOnly?: boolean;
 }
 export interface Rule extends Omit<RuleInput, 'id'> {
   id: string;
@@ -19,6 +20,7 @@ export interface Rule extends Omit<RuleInput, 'id'> {
   movieId?: string;
 }
 export interface Session {
+  notificationKind?: 'dayOpen' | 'earliest';
   provider: Provider;
   showingId?: string;
   theaterId: string;
@@ -67,6 +69,7 @@ export interface Settings {
   shouldStartAtLogin: boolean;
   hasConfiguredLogin: boolean;
   shouldNotifyLocally: boolean;
+  shouldKeepAwake?: boolean;
 }
 export interface State {
   schemaVersion: 2;
@@ -80,7 +83,23 @@ export interface State {
   localDedupe: Record<string, number>;
   history: HistoryItem[];
 }
+export interface EarliestSession {
+  identity: string;
+  startsAt: number;
+  date: string;
+  time: string;
+  format: Session['format'];
+  screen: string;
+}
+export interface RuleEarliest {
+  revision: number;
+  checkedAt: number;
+  session?: EarliestSession;
+}
 export interface Snapshot {
+  earliestByRule?: Record<string, RuleEarliest>;
+  isKeepingAwake?: boolean;
+  keepAwakeWarning?: string;
   rules: Rule[];
   settings: Settings;
   progress: Record<string, Omit<RuleProgress, 'baseline'>>;
@@ -106,14 +125,25 @@ export interface Catalog {
   fetchedAt: number;
   regions: { id: string; name: string }[];
   theaters: { id: string; name: string; regionId: string }[];
-  movies: { id: string; title: string }[];
+  movies: { id: string; title: string; posterUrl?: string }[];
 }
 export interface CatalogRequest {
   provider: Provider;
   requestId: string;
   force?: boolean;
 }
+export interface PosterRequest {
+  provider: Provider;
+  movieId?: string;
+  movieTitle: string;
+  requestId: string;
+}
+export interface PosterResult {
+  dataUrl?: string;
+}
 export interface CinemaApi {
+  getPoster(input: PosterRequest): Promise<PosterResult>;
+  cancelPoster(input: { requestId: string }): Promise<void>;
   getCatalog(input: CatalogRequest): Promise<Catalog>;
   cancelCatalog(input: { requestId: string }): Promise<void>;
   getSnapshot(): Promise<Snapshot>;
@@ -126,6 +156,7 @@ export interface CinemaApi {
     intervalSeconds?: number;
     shouldStartAtLogin?: boolean;
     shouldNotifyLocally?: boolean;
+    shouldKeepAwake?: boolean;
   }): Promise<Snapshot>;
   refresh(): Promise<Snapshot>;
   openBooking(input: { provider: Provider; url: string }): Promise<void>;

@@ -30,10 +30,24 @@ export function validateIpc(channel: string, payload: unknown) {
         ...(v.force === undefined ? {} : { force: flag(v.force) }),
       };
     }
+    case 'cancelPoster':
     case 'cancelCatalog': {
       const v = object(payload);
       exact(v, ['requestId']);
       return { requestId: catalogRequestId(v.requestId) };
+    }
+    case 'getPoster': {
+      const v = object(payload);
+      exact(v, ['provider', 'movieId', 'movieTitle', 'requestId']);
+      if (!PROVIDERS.includes(v.provider as Provider)) throw new Error('영화관을 선택하세요.');
+      const movieId = v.movieId === undefined ? undefined : text(v.movieId, 80);
+      if (movieId && !/^[\dA-Za-z_-]+$/u.test(movieId)) throw new Error('작품 ID를 확인하세요.');
+      return {
+        provider: v.provider as Provider,
+        movieTitle: text(v.movieTitle, 120),
+        requestId: catalogRequestId(v.requestId),
+        ...(movieId ? { movieId } : {}),
+      };
     }
     case 'saveRule':
       return validateRule(payload);

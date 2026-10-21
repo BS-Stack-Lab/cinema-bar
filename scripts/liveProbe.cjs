@@ -30,7 +30,7 @@ void (async () => {
     await app.whenReady();
     app.dock?.hide();
     const [
-      { createProviders },
+      { createProviders, eligibleSessions },
       { createCgvTransport },
       { Store },
       { SecretStore },
@@ -194,6 +194,7 @@ void (async () => {
       const reads = [];
       let mockDiscord = 0;
       let mockLocal = 0;
+      const mockLocalIdentities = [];
       const engine = new Engine(store, secrets, {
         providers: {
           ...providers,
@@ -207,8 +208,9 @@ void (async () => {
           mockDiscord++;
           return { kind: 'sent' };
         },
-        notifyLocal: async () => {
+        notifyLocal: async (session) => {
           mockLocal++;
+          mockLocalIdentities.push(sessionIdentity(session));
           return { kind: 'requested' };
         },
         isLocalAlertSupported: () => true,
@@ -224,23 +226,37 @@ void (async () => {
             !first.error,
         );
         assert.equal(mockDiscord, 0);
-        assert.equal(mockLocal, 0);
+        const bookableIdentities = (sessions) => [
+          ...new Set(
+            eligibleSessions(store.state.rules[0], sessions)
+              .filter((session) => session.isBookable)
+              .map(sessionIdentity),
+          ),
+        ];
+        const firstEligible = bookableIdentities(reads[0].sessions);
+        const firstExpected = firstEligible.slice(-100).slice(0, 10);
+        const firstLocalIdentities = [...mockLocalIdentities];
+        assert.deepEqual(firstLocalIdentities, firstExpected);
+        const firstPendingIdentities = store.state.localOutbox.map((item) => item.id);
         phase = `${provider}:engine-second`;
         await engine.refresh();
         const second = structuredClone(store.state.progress[rule.id]);
         assert.ok(second.lastSuccess >= first.lastSuccess && second.count >= 1 && !second.error);
         assert.equal(reads.length, 2);
         assert.equal(store.state.rules[0].movieId, selected.movieId);
-        const newBookable = reads[1].sessions.filter(
-          (s) =>
-            s.isBookable &&
-            s.movieId === selected.movieId &&
-            s.theaterId === rule.theaterId &&
-            s.date === rule.date &&
-            first.baseline[sessionIdentity(s)] !== true,
-        );
+        const secondEligible = bookableIdentities(reads[1].sessions);
+        const secondExpected = [
+          ...new Set([
+            ...firstPendingIdentities,
+            ...secondEligible.filter((id) => !firstLocalIdentities.includes(id)),
+          ]),
+        ]
+          .slice(-100)
+          .slice(0, 10);
+        const secondLocalIdentities = mockLocalIdentities.slice(firstLocalIdentities.length);
         assert.equal(mockDiscord, 0);
-        assert.equal(mockLocal, Math.min(10, new Set(newBookable.map(sessionIdentity)).size));
+        assert.deepEqual(secondLocalIdentities, secondExpected);
+        assert.equal(new Set(mockLocalIdentities).size, mockLocal);
         evidence.providers.push({
           provider,
           rule,
@@ -253,7 +269,11 @@ void (async () => {
           reads,
           mockDiscordSends: mockDiscord,
           mockLocalRequests: mockLocal,
-          naturallyNewBookable: newBookable.length,
+          firstEligibleIdentities: firstEligible,
+          firstLocalIdentities,
+          firstPendingIdentities,
+          secondEligibleIdentities: secondEligible,
+          secondLocalIdentities,
           fixtureOrReplay: false,
         });
       } finally {

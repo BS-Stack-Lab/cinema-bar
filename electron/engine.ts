@@ -1,10 +1,21 @@
 import { randomUUID } from 'node:crypto';
+import {
+  alertHistory,
+  alertSummary,
+  dayAlertKey,
+  enqueueDayAlert,
+  isDayAlert,
+  pinDayAlert,
+  pruneAlertDedupe,
+  reconcileDayAlerts,
+} from './dayAlerts.js';
 import { Store } from './store.js';
 import { SecretStore } from './secretStore.js';
 import { eligibleSessions, ProviderError, type ProviderAdapter } from './providers/index.js';
 import { sessionIdentity, validateRule, validateSettings, text } from './validation.js';
 import type { DeliveryResult } from './discord.js';
 import { isRuleEligible } from './eligibility.js';
+import { compareSessions, isFutureSession, sessionStartsAt } from './sessionTiming.js';
 import type {
   HistoryItem,
   LocalAlertResult,
@@ -20,11 +31,19 @@ export interface EngineDependencies {
   deliver: (url: string, session: Session, signal: AbortSignal) => Promise<DeliveryResult>;
   notifyLocal?: (session: Session, signal: AbortSignal) => Promise<LocalAlertResult>;
   isLocalAlertSupported?: () => boolean;
+  isLocalAlertReady?: () => boolean;
   now?: () => number;
   random?: () => number;
 }
 export class Engine {
   private generation = 0;
+  private candidates = new Map<
+    string,
+    { revision: number; checkedAt: number; sessions: Session[] }
+  >();
+  isStarted = false;
+  isKeepingAwake = false;
+  keepAwakeWarning?: string;
   private timer?: ReturnType<typeof setTimeout>;
   private running?: Promise<void>;
   private controller?: AbortController;
@@ -60,6 +79,37 @@ export class Engine {
   snapshot(): Snapshot {
     const s = this.store.state;
     return {
+      earliestByRule: Object.fromEntries(
+        s.rules.flatMap((rule) => {
+          const current = this.candidates.get(rule.id);
+          if (!current || current.revision !== rule.revision || !isRuleEligible(rule, this.now()))
+            return [];
+          const session = current.sessions.find((item) => isFutureSession(item, this.now()));
+          return [
+            [
+              rule.id,
+              {
+                revision: rule.revision,
+                checkedAt: current.checkedAt,
+                ...(session
+                  ? {
+                      session: {
+                        identity: sessionIdentity(session),
+                        startsAt: sessionStartsAt(session)!,
+                        date: session.date,
+                        time: session.time,
+                        format: session.format,
+                        screen: session.screen,
+                      },
+                    }
+                  : {}),
+              },
+            ],
+          ];
+        }),
+      ),
+      isKeepingAwake: this.isKeepingAwake,
+      keepAwakeWarning: this.keepAwakeWarning,
       rules: s.rules,
       settings: s.settings,
       progress: Object.fromEntries(
@@ -107,6 +157,7 @@ export class Engine {
     this.needsRefresh = false;
   }
   stop() {
+    this.isStarted = false;
     this.isStopped = true;
     this.invalidate();
     this.emit();
@@ -129,6 +180,7 @@ export class Engine {
     this.emit();
   }
   start() {
+    this.isStarted = true;
     this.isStopped = false;
     this.wake(false);
   }
@@ -142,6 +194,7 @@ export class Engine {
     }
     if (this.running) {
       this.needsRefresh = true;
+      this.emit();
       return;
     }
     void this.tick().catch(() => {
@@ -163,14 +216,21 @@ export class Engine {
     const value = validateRule(input);
     this.invalidate();
     await this.store.mutate((s) => {
+      reconcileDayAlerts(s, this.now());
       const previous = value.id ? s.rules.find((r) => r.id === value.id) : undefined;
       if (value.id && !previous) throw new Error('규칙을 찾을 수 없습니다.');
       if (!previous && s.rules.length >= 100)
         throw new Error('감시는 최대 100개까지 저장할 수 있습니다.');
       const id = previous?.id ?? randomUUID();
+      if (previous && isDayAlert(value) && dayAlertKey(previous) === dayAlertKey(value)) {
+        if (value.shouldNotifyEarliestOnly === undefined) delete previous.shouldNotifyEarliestOnly;
+        else previous.shouldNotifyEarliestOnly = value.shouldNotifyEarliestOnly;
+        reconcileDayAlerts(s, this.now());
+      }
       const rule = { ...value, id, revision: (previous?.revision ?? 0) + 1 };
       s.rules = [...s.rules.filter((r) => r.id !== id), rule];
       delete s.progress[id];
+      this.candidates.delete(id);
       this.removeRuleQueue(s, id);
     });
     this.wake(true);
@@ -198,6 +258,7 @@ export class Engine {
     await this.store.mutate((s) => {
       s.rules = s.rules.filter((r) => r.id !== id);
       delete s.progress[id];
+      this.candidates.delete(id);
       this.removeRuleQueue(s, id);
     });
     this.wake(true);
@@ -260,6 +321,7 @@ export class Engine {
   }
   async recover() {
     this.invalidate();
+    this.candidates.clear();
     await this.store.recover();
     this.wake(true);
     return this.snapshot();
@@ -278,7 +340,7 @@ export class Engine {
           ),
         );
       const isExpired = now - item.createdAt >= MAX_AGE;
-      if (!isValid || isExpired) {
+      if (!isValid || isExpired || !isFutureSession(item.session, now)) {
         if (s.localDedupe[item.id] === 0) delete s.localDedupe[item.id];
         if (isExpired)
           this.history(s, {
@@ -292,30 +354,29 @@ export class Engine {
       }
       return true;
     });
+    s.localOutbox.sort((a, b) => compareSessions(a.session, b.session));
     while (s.localOutbox.length > 100) {
-      const item = s.localOutbox.shift()!;
+      const item = s.localOutbox.pop()!;
       if (s.localDedupe[item.id] === 0) delete s.localDedupe[item.id];
       this.history(s, {
         id: randomUUID(),
         at: now,
         kind: 'overflow',
         title: item.session.movieTitle,
-        detail: '앱 알림: 대기 한도 100개를 초과해 가장 오래된 항목을 종료했습니다.',
+        detail: '앱 알림: 대기 한도 100개를 초과해 가장 늦은 회차의 대기를 종료했습니다.',
       });
     }
-    s.localDedupe = Object.fromEntries(
-      Object.entries(s.localDedupe)
-        .filter(([, at]) => at === 0 || now - at < 30 * MAX_AGE)
-        .slice(-5000),
-    );
+    s.localDedupe = pruneAlertDedupe(s.localDedupe, s.rules, now);
     s.outbox = s.outbox.filter((item) => {
       const isStale =
         item.secretRevision !== s.secret.revision ||
         !item.ruleRefs.some((ref) =>
-          s.rules.some((r) => r.id === ref.id && r.revision === ref.revision && r.isEnabled),
+          s.rules.some(
+            (r) => r.id === ref.id && r.revision === ref.revision && isRuleEligible(r, now),
+          ),
         );
       const isExpired = now - item.createdAt >= MAX_AGE;
-      if (isStale || isExpired) {
+      if (isStale || isExpired || !isFutureSession(item.session, now)) {
         if (s.dedupe[item.id] === 0) delete s.dedupe[item.id];
         if (isExpired)
           this.history(s, {
@@ -329,22 +390,19 @@ export class Engine {
       }
       return true;
     });
+    s.outbox.sort((a, b) => compareSessions(a.session, b.session));
     while (s.outbox.length > 100) {
-      const item = s.outbox.shift()!;
+      const item = s.outbox.pop()!;
       if (s.dedupe[item.id] === 0) delete s.dedupe[item.id];
       this.history(s, {
         id: randomUUID(),
         at: now,
         kind: 'overflow',
         title: item.session.movieTitle,
-        detail: '대기 한도 100개를 초과해 가장 오래된 항목을 종료했습니다.',
+        detail: '대기 한도 100개를 초과해 가장 늦은 회차의 대기를 종료했습니다.',
       });
     }
-    s.dedupe = Object.fromEntries(
-      Object.entries(s.dedupe)
-        .filter(([, at]) => at === 0 || now - at < 30 * MAX_AGE)
-        .slice(-5000),
-    );
+    s.dedupe = pruneAlertDedupe(s.dedupe, s.rules, now);
   }
   private backoff(attempt: number) {
     return (
@@ -365,7 +423,10 @@ export class Engine {
     const work = async () => {
       if (!isCurrent()) return;
       await this.store.mutate((s) => {
-        if (isCurrent()) this.prune(s);
+        if (isCurrent()) {
+          reconcileDayAlerts(s, this.now());
+          this.prune(s);
+        }
       }, isCurrent);
       const rules = [...this.store.state.rules];
       for (const rule of rules) {
@@ -380,7 +441,7 @@ export class Engine {
         try {
           const raw = await this.dependencies.providers[rule.provider](rule, controller.signal);
           if (!isCurrent()) return;
-          const sessions = eligibleSessions(rule, raw);
+          const sessions = eligibleSessions(rule, raw).sort(compareSessions);
           await this.store.mutate((s) => {
             if (
               !isCurrent() ||
@@ -389,44 +450,57 @@ export class Engine {
               return;
             const previous = s.progress[rule.id];
             const now = this.now();
+            reconcileDayAlerts(s, now, raw);
+            const currentRule = s.rules.find((r) => r.id === rule.id)!;
+            const exactMovieIds = new Set(
+              eligibleSessions({ ...rule, format: 'ALL' }, raw).map((item) => item.movieId),
+            );
+            if (!currentRule.movieId && sessions.length && exactMovieIds.size === 1) {
+              pinDayAlert(s, currentRule, sessions[0].movieId);
+              reconcileDayAlerts(s, now, raw);
+            }
             const baseline = Object.fromEntries(
               sessions.map((session) => [sessionIdentity(session), session.isBookable]),
             );
-            if (previous?.baseline && previous.revision === rule.revision)
-              for (const session of sessions) {
-                const id = sessionIdentity(session);
-                if (!session.isBookable || previous.baseline[id] === true) continue;
-                const common = {
-                  id,
-                  session,
-                  ruleRefs: s.rules
-                    .filter((r) => isRuleEligible(r, now) && eligibleSessions(r, [session]).length)
-                    .map((r) => ({ id: r.id, revision: r.revision })),
-                  createdAt: now,
-                  nextAt: now,
-                  attempts: 0,
-                };
-                if (
-                  s.settings.shouldNotifyLocally &&
-                  !Object.hasOwn(s.localDedupe, id) &&
-                  !s.localOutbox.some((q) => q.id === id)
-                ) {
-                  s.localDedupe[id] = 0;
-                  s.localOutbox.push(common);
-                }
-                if (
-                  s.secret.encrypted &&
-                  !Object.hasOwn(s.dedupe, id) &&
-                  !s.outbox.some((q) => q.id === id)
-                ) {
-                  s.dedupe[id] = 0;
-                  s.outbox.push({ ...common, secretRevision: s.secret.revision });
-                }
+            const future = sessions.filter(
+              (session) => session.isBookable && isFutureSession(session, now),
+            );
+            if (isDayAlert(currentRule) && future[0])
+              enqueueDayAlert(s, currentRule, future[0], now);
+            for (const session of isDayAlert(currentRule) ? [] : sessions) {
+              const id = sessionIdentity(session);
+              if (!session.isBookable || !isFutureSession(session, now)) continue;
+              const common = {
+                id,
+                session,
+                ruleRefs: s.rules
+                  .filter(
+                    (r) =>
+                      !isDayAlert(r) &&
+                      isRuleEligible(r, now) &&
+                      eligibleSessions(r, [session]).length,
+                  )
+                  .map((r) => ({ id: r.id, revision: r.revision })),
+                createdAt: now,
+                nextAt: now,
+                attempts: 0,
+              };
+              if (
+                s.settings.shouldNotifyLocally &&
+                !Object.hasOwn(s.localDedupe, id) &&
+                !s.localOutbox.some((q) => q.id === id)
+              ) {
+                s.localDedupe[id] = 0;
+                s.localOutbox.push(common);
               }
-            const exactMovieIds = new Set(sessions.map((item) => item.movieId));
-            if (!rule.movieId && exactMovieIds.size === 1) {
-              const current = s.rules.find((r) => r.id === rule.id)!;
-              current.movieId = sessions[0].movieId;
+              if (
+                s.secret.encrypted &&
+                !Object.hasOwn(s.dedupe, id) &&
+                !s.outbox.some((q) => q.id === id)
+              ) {
+                s.dedupe[id] = 0;
+                s.outbox.push({ ...common, secretRevision: s.secret.revision });
+              }
             }
             s.progress[rule.id] = {
               revision: rule.revision,
@@ -437,6 +511,13 @@ export class Engine {
               nextAt: now + s.settings.intervalSeconds * 1000,
               count: sessions.filter((session) => session.isBookable).length,
             };
+            this.candidates.set(rule.id, {
+              revision: rule.revision,
+              checkedAt: now,
+              sessions: sessions.filter(
+                (session) => session.isBookable && isFutureSession(session, now),
+              ),
+            });
             this.prune(s);
           }, isCurrent);
         } catch (error) {
@@ -472,6 +553,7 @@ export class Engine {
       for (let attempt = 0; attempt < 10 && isCurrent(); attempt++) {
         const item = this.store.state.localOutbox.find((q) => q.nextAt <= this.now());
         if (!item || !this.store.state.settings.shouldNotifyLocally) break;
+        if (!(this.dependencies.isLocalAlertReady?.() ?? true)) break;
         const localRevision = this.localRevision;
         const localController = new AbortController();
         this.localController = localController;
@@ -523,8 +605,8 @@ export class Engine {
             title: item.session.movieTitle,
             detail:
               result.kind === 'requested'
-                ? `앱 알림 표시 요청 · ${item.session.theaterName} · ${item.session.date} ${item.session.time} · ${item.session.format}`
-                : this.localAlertWarning!,
+                ? alertHistory(item.session, `앱 알림 표시 요청 · ${alertSummary(item.session)}`)
+                : alertHistory(item.session, this.localAlertWarning!),
           });
         }, isCurrent);
       }
@@ -537,8 +619,10 @@ export class Engine {
         (state.secret.retryAt ?? 0) > this.now()
       )
         return;
-      const item = state.outbox.find((q) => q.nextAt <= this.now());
-      if (!item || state.localOutbox.some((q) => q.id === item.id)) return;
+      const item = state.outbox.find(
+        (q) => q.nextAt <= this.now() && !state.localOutbox.some((local) => local.id === q.id),
+      );
+      if (!item) return;
       let url: string;
       try {
         url = this.secrets.decode(state.secret.encrypted);
@@ -550,6 +634,20 @@ export class Engine {
       }
       const discordController = new AbortController();
       this.discordController = discordController;
+      await this.store.mutate(
+        (s) => {
+          if (
+            !isCurrent() ||
+            discordController.signal.aborted ||
+            s.secret.revision !== item.secretRevision
+          )
+            return;
+          const current = s.outbox.find((candidate) => candidate.id === item.id);
+          if (current) current.attempts++;
+        },
+        () => isCurrent() && !discordController.signal.aborted,
+      );
+      if (!isCurrent() || discordController.signal.aborted) return;
       const result = await this.dependencies.deliver(url, item.session, discordController.signal);
       this.discordController = undefined;
       if (!isCurrent()) return;
@@ -558,8 +656,7 @@ export class Engine {
         const current = s.outbox.find((q) => q.id === item.id);
         if (!current) return;
         const now = this.now();
-        if (result.kind === 'retry' && current.attempts < 8) {
-          current.attempts++;
+        if (result.kind === 'retry' && current.attempts <= 8) {
           current.nextAt = now + Math.max(this.backoff(current.attempts), result.delayMs);
           s.secret.retryAt = current.nextAt;
           this.history(s, {
@@ -567,7 +664,7 @@ export class Engine {
             at: now,
             kind: 'failed',
             title: item.session.movieTitle,
-            detail: result.detail,
+            detail: alertHistory(item.session, result.detail),
           });
         } else if (result.kind === 'terminal') {
           s.secret.isTerminal = true;
@@ -576,7 +673,7 @@ export class Engine {
             at: now,
             kind: 'failed',
             title: item.session.movieTitle,
-            detail: result.detail,
+            detail: alertHistory(item.session, result.detail),
           });
         } else {
           s.outbox = s.outbox.filter((q) => q.id !== item.id);
@@ -588,10 +685,13 @@ export class Engine {
             title: item.session.movieTitle,
             detail:
               result.kind === 'sent'
-                ? `${item.session.theaterName} · ${item.session.date} ${item.session.time} · ${item.session.format}`
-                : result.kind === 'retry'
-                  ? '재시도 한도 8회에 도달했습니다. 웹훅과 연결을 확인하세요.'
-                  : result.detail,
+                ? alertHistory(item.session, alertSummary(item.session))
+                : alertHistory(
+                    item.session,
+                    result.kind === 'retry'
+                      ? '재시도 한도 8회에 도달했습니다. 웹훅과 연결을 확인하세요.'
+                      : result.detail,
+                  ),
           });
           s.secret.retryAt = now + 1000;
         }
@@ -619,9 +719,21 @@ export class Engine {
       .map((r) =>
         Math.max(s.progress[r.id]?.nextAt ?? this.now(), s.progress[r.id]?.retryUntil ?? 0),
       );
-    if (s.settings.shouldNotifyLocally) times.push(...s.localOutbox.map((q) => q.nextAt));
+    if (s.settings.shouldNotifyLocally)
+      times.push(
+        ...s.localOutbox.map((q) =>
+          Math.max(
+            q.nextAt,
+            (this.dependencies.isLocalAlertReady?.() ?? true) ? 0 : this.now() + 1000,
+          ),
+        ),
+      );
     if (s.secret.encrypted && !s.secret.isTerminal && this.secrets.isAvailable())
-      times.push(...s.outbox.map((q) => Math.max(q.nextAt, s.secret.retryAt ?? 0)));
+      times.push(
+        ...s.outbox
+          .filter((q) => !s.localOutbox.some((local) => local.id === q.id))
+          .map((q) => Math.max(q.nextAt, s.secret.retryAt ?? 0)),
+      );
     return times.length ? Math.min(...times) : undefined;
   }
   private schedule() {

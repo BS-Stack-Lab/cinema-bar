@@ -77,6 +77,17 @@ export function validatePosterUrl(provider: Provider, value: string): string | u
     return;
   }
 }
+function posterCandidates(provider: Provider, source: string): readonly string[] {
+  if (provider === 'megabox')
+    return [
+      source.replace(/_150(\.[a-z]+)$/u, '$1'),
+      source.replace(/_150(\.[a-z]+)$/u, '_420$1'),
+      source,
+    ];
+  if (provider === 'lottecinema' && /_503_\d+\.[a-z]+$/u.test(source))
+    return [source.replace(/_503_(\d+\.[a-z]+)$/u, '_201_$1'), source];
+  return [source];
+}
 interface Waiter {
   resolve(value: PosterResult): void;
   reject(error: Error): void;
@@ -90,7 +101,7 @@ interface Lookup {
 }
 interface Job {
   key: string;
-  url: string;
+  urls: readonly string[];
   waiters: Set<string>;
   controller: AbortController;
   timer?: ReturnType<typeof setTimeout>;
@@ -166,7 +177,13 @@ export class PosterService {
       let job = this.jobs.get(key);
       if (!job) {
         if (this.jobs.size >= 100) return this.settle(input.requestId, {});
-        job = { key, url, waiters: new Set(), controller: new AbortController(), isStarted: false };
+        job = {
+          key,
+          urls: posterCandidates(input.provider, url),
+          waiters: new Set(),
+          controller: new AbortController(),
+          isStarted: false,
+        };
         this.jobs.set(key, job);
       }
       waiter.job = job;
@@ -236,20 +253,38 @@ export class PosterService {
     job.waiters.clear();
     this.pump();
   }
+  private isActive(job: Job) {
+    return !this.isDisposed && !job.controller.signal.aborted && this.jobs.get(job.key) === job;
+  }
   private async download(job: Job) {
+    for (const url of job.urls) {
+      if (!this.isActive(job)) return;
+      const value = await this.downloadCandidate(job, url);
+      if (!this.isActive(job)) return;
+      if (value) {
+        this.finish(job, value);
+        return;
+      }
+    }
+    if (this.isActive(job)) this.finish(job, undefined, true);
+  }
+  private async downloadCandidate(job: Job, url: string) {
+    const signal = job.controller.signal;
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    const cancelReader = () => {
+      void reader?.cancel().catch(() => undefined);
+    };
     try {
-      const signal = job.controller.signal;
-      const response = await this.fetcher(job.url, {
+      const response = await this.fetcher(url, {
         signal,
         credentials: 'omit',
         redirect: 'error',
         cache: 'no-store',
       });
       if (
-        signal.aborted ||
+        !this.isActive(job) ||
         response.redirected ||
-        (response.url && response.url !== job.url) ||
+        (response.url && response.url !== url) ||
         !response.ok ||
         !response.body
       ) {
@@ -267,21 +302,14 @@ export class PosterService {
       reader = response.body.getReader();
       const chunks: Uint8Array[] = [];
       let size = 0;
-      const cancelReader = () => {
-        void reader?.cancel().catch(() => undefined);
-      };
       signal.addEventListener('abort', cancelReader, { once: true });
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (signal.aborted) throw new Error('cancelled');
-          if (done) break;
-          size += value.byteLength;
-          if (size > MAX_BYTES) throw new Error('image size');
-          chunks.push(value);
-        }
-      } finally {
-        signal.removeEventListener('abort', cancelReader);
+      while (true) {
+        const { done, value } = await reader.read();
+        if (!this.isActive(job)) throw new Error('cancelled');
+        if (done) break;
+        size += value.byteLength;
+        if (size > MAX_BYTES) throw new Error('image size');
+        chunks.push(value);
       }
       const bytes = Buffer.concat(chunks, size);
       const hasMagic =
@@ -291,9 +319,10 @@ export class PosterService {
             ? bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255
             : bytes.subarray(0, 4).toString() === 'RIFF' &&
               bytes.subarray(8, 12).toString() === 'WEBP';
-      if (!hasMagic || signal.aborted) throw new Error('image signature');
+      if (!hasMagic || !this.isActive(job)) throw new Error('image signature');
       const dimensions = this.inspect(bytes);
       if (
+        !this.isActive(job) ||
         !dimensions ||
         !Number.isInteger(dimensions.width) ||
         !Number.isInteger(dimensions.height) ||
@@ -304,14 +333,14 @@ export class PosterService {
         dimensions.width * dimensions.height > 16000000
       )
         throw new Error('image dimensions');
-      this.finish(job, {
+      return {
         result: { dataUrl: `data:${mime};base64,${bytes.toString('base64')}` },
         bytes: size,
-      });
+      };
     } catch {
       await reader?.cancel().catch(() => undefined);
-      this.finish(job, undefined, true);
     } finally {
+      signal.removeEventListener('abort', cancelReader);
       reader?.releaseLock();
     }
   }

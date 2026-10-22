@@ -6,7 +6,7 @@ import {
   type ImageInspector,
 } from '../electron/posters';
 import { validateIpc } from '../electron/ipc';
-import type { Catalog, PosterRequest } from '../electron/types';
+import type { Catalog, PosterRequest, Provider } from '../electron/types';
 import type { Fetcher } from '../electron/providers/index';
 const PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a2ioAAAAASUVORK5CYII=',
@@ -20,20 +20,35 @@ const request = (id = '1', requestId = `request-${id}`): PosterRequest => ({
   requestId,
 });
 const url = (id: string) => catalogPosterUrl('cgv', id, `${id}_320.jpg`)!;
+const megaboxUrl = (id = '1', extension = 'png') =>
+  catalogPosterUrl('megabox', id, `/SharedImg/2026/10/14/poster_${id}_150.${extension}`)!;
+const lotteUrl = (id = '1') =>
+  `https://cf.lottecinema.co.kr/Media/MovieFile/MovieImg/202607/${id}_503_1.jpg`;
+const providerRequest = (provider: Provider, id = '1', requestId = `request-${id}`) => ({
+  ...request(id, requestId),
+  provider,
+});
+const imageResponse = () => new Response(PNG, { headers: { 'content-type': 'image/png' } });
 function fixture(
-  fetcher: Fetcher = async () => new Response(PNG, { headers: { 'content-type': 'image/png' } }),
+  fetcher: Fetcher = async () => imageResponse(),
   inspect: ImageInspector = () => ({ width: 1, height: 1 }),
+  provider: Provider = 'cgv',
 ) {
   let now = 0;
   const catalog: Catalog = {
-    provider: 'cgv',
+    provider,
     fetchedAt: 0,
     regions: [],
     theaters: [],
     movies: Array.from({ length: 110 }, (_, i) => ({
       id: String(i + 1),
       title: `Movie ${i + 1}`,
-      posterUrl: url(String(i + 1)),
+      posterUrl:
+        provider === 'megabox'
+          ? megaboxUrl(String(i + 1))
+          : provider === 'lottecinema'
+            ? lotteUrl(String(i + 1))
+            : url(String(i + 1)),
     })),
   };
   const get = vi.fn(async () => structuredClone(catalog));
@@ -118,6 +133,450 @@ describe('official poster references and narrow IPC', () => {
     await expect(f.service.get(request())).rejects.toThrow();
     f.service.cancel('request-1');
     await pending;
+  });
+});
+describe('official poster quality candidates', () => {
+  it.each([0, 1, 2])(
+    'uses Megabox candidate %i after only earlier candidates fail',
+    async (successAt) => {
+      let attempt = 0;
+      const f = fixture(
+        async () =>
+          attempt++ < successAt ? new Response('missing', { status: 404 }) : imageResponse(),
+        undefined,
+        'megabox',
+      );
+      expect((await f.service.get(providerRequest('megabox'))).dataUrl).toBeTruthy();
+      expect(f.transport.mock.calls.map(([input]) => input)).toEqual(
+        [
+          megaboxUrl().replace('_150.png', '.png'),
+          megaboxUrl().replace('_150.png', '_420.png'),
+          megaboxUrl(),
+        ].slice(0, successAt + 1),
+      );
+      expect(new Set(f.transport.mock.calls.map(([, init]) => init!.signal)).size).toBe(1);
+      for (const [, init] of f.transport.mock.calls)
+        expect(init).toEqual(
+          expect.objectContaining({ credentials: 'omit', redirect: 'error', cache: 'no-store' }),
+        );
+    },
+  );
+  it.each(['png', 'jpg', 'jpeg', 'webp'])(
+    'preserves Megabox basename and %s extension',
+    async (extension) => {
+      const f = fixture(async () => new Response('missing', { status: 404 }), undefined, 'megabox');
+      const source = megaboxUrl('1', extension).replace('poster_1_', 'part_150_name-1_');
+      f.catalog.movies[0].posterUrl = source;
+      expect(await f.service.get(providerRequest('megabox'))).toEqual({});
+      expect(f.transport.mock.calls.map(([input]) => input)).toEqual([
+        source.replace(/_150(\.[a-z]+)$/u, '$1'),
+        source.replace(/_150(\.[a-z]+)$/u, '_420$1'),
+        source,
+      ]);
+    },
+  );
+  it.each([0, 1])(
+    'uses Lotte candidate %i with canonical source and preserved index',
+    async (successAt) => {
+      let attempt = 0;
+      const f = fixture(
+        async () =>
+          attempt++ < successAt ? new Response('missing', { status: 404 }) : imageResponse(),
+        undefined,
+        'lottecinema',
+      );
+      const source = lotteUrl().replace('_1.jpg', '_12.jpeg');
+      f.catalog.movies[0].posterUrl = source
+        .replace('https:', 'http:')
+        .replace('/Media/', '//Media/');
+      expect((await f.service.get(providerRequest('lottecinema'))).dataUrl).toBeTruthy();
+      expect(f.transport.mock.calls.map(([input]) => input)).toEqual(
+        [source.replace('_503_', '_201_'), source].slice(0, successAt + 1),
+      );
+    },
+  );
+  it.each(['201', '101', '1', '1503'])(
+    'keeps other Lotte size %s as one unchanged candidate',
+    async (size) => {
+      const f = fixture(
+        async () => new Response('missing', { status: 404 }),
+        undefined,
+        'lottecinema',
+      );
+      const source = lotteUrl().replace('_503_', `_${size}_`);
+      f.catalog.movies[0].posterUrl = source;
+      expect(await f.service.get(providerRequest('lottecinema'))).toEqual({});
+      expect(f.transport.mock.calls.map(([input]) => input)).toEqual([source]);
+    },
+  );
+  it('does not accept derived Megabox candidates as catalog input', async () => {
+    const f = fixture(undefined, undefined, 'megabox');
+    for (const source of [
+      megaboxUrl().replace('_150.png', '.png'),
+      megaboxUrl().replace('_150.png', '_420.png'),
+    ]) {
+      expect(validatePosterUrl('megabox', source)).toBeUndefined();
+      f.catalog.movies[0].posterUrl = source;
+      expect(await f.service.get(providerRequest('megabox'))).toEqual({});
+    }
+    expect(f.transport).not.toHaveBeenCalled();
+  });
+  const failures: Array<{ name: string; response?: () => Response; inspect?: ImageInspector }> = [
+    { name: '404', response: () => new Response(PNG, { status: 404 }) },
+    { name: 'transport exception' },
+    { name: 'redirect status', response: () => new Response(PNG, { status: 302 }) },
+    {
+      name: 'redirected response',
+      response: () => Object.defineProperty(imageResponse(), 'redirected', { value: true }),
+    },
+    {
+      name: 'different response URL',
+      response: () => Object.defineProperty(imageResponse(), 'url', { value: megaboxUrl() }),
+    },
+    {
+      name: 'missing body',
+      response: () => new Response(null, { headers: { 'content-type': 'image/png' } }),
+    },
+    {
+      name: 'HTML',
+      response: () => new Response('<html/>', { headers: { 'content-type': 'text/html' } }),
+    },
+    {
+      name: 'SVG',
+      response: () => new Response('<svg/>', { headers: { 'content-type': 'image/svg+xml' } }),
+    },
+    {
+      name: 'MIME signature mismatch',
+      response: () => new Response(PNG, { headers: { 'content-type': 'image/jpeg' } }),
+    },
+    {
+      name: 'invalid signature',
+      response: () => new Response('not png', { headers: { 'content-type': 'image/png' } }),
+    },
+    {
+      name: 'empty raster',
+      response: () => new Response(Buffer.alloc(0), { headers: { 'content-type': 'image/png' } }),
+    },
+    {
+      name: 'oversized content length',
+      response: () =>
+        new Response(PNG, {
+          headers: { 'content-type': 'image/png', 'content-length': String(1024 * 1024 + 1) },
+        }),
+    },
+    {
+      name: 'oversized stream',
+      response: () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new Uint8Array(1024 * 1024 + 1));
+            },
+          }),
+          { headers: { 'content-type': 'image/png' } },
+        ),
+    },
+    {
+      name: 'stream exception',
+      response: () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.error(new Error('stream failed'));
+            },
+          }),
+          { headers: { 'content-type': 'image/png' } },
+        ),
+    },
+    { name: 'unsupported decode', response: imageResponse, inspect: () => undefined },
+    {
+      name: 'decode exception',
+      response: imageResponse,
+      inspect: () => {
+        throw new Error('decode failed');
+      },
+    },
+    ...[
+      { width: 0, height: 1 },
+      { width: 1, height: -1 },
+      { width: 4097, height: 1 },
+      { width: 1, height: 4097 },
+      { width: 4096, height: 4096 },
+      { width: 1.5, height: 2 },
+      { width: 1, height: NaN },
+    ].map((dimensions) => ({
+      name: `dimensions ${JSON.stringify(dimensions)}`,
+      response: imageResponse,
+      inspect: () => dimensions,
+    })),
+  ];
+  it.each(failures)(
+    'falls back after $name and cleans the failed response',
+    async ({ response: createResponse, inspect: failedInspect }) => {
+      const response = createResponse?.();
+      const body = response?.body;
+      const cancelBody = body && vi.spyOn(body, 'cancel');
+      const getReader = body && vi.spyOn(body, 'getReader');
+      const inspect = vi.fn<ImageInspector>(() => ({ width: 1, height: 1 }));
+      if (failedInspect) inspect.mockImplementationOnce(failedInspect);
+      let attempt = 0;
+      const f = fixture(
+        async () => {
+          if (attempt++ === 0) {
+            if (!response) throw new Error('transport failed');
+            return response;
+          }
+          expect(body?.locked ?? false).toBe(false);
+          return imageResponse();
+        },
+        inspect,
+        'megabox',
+      );
+      expect((await f.service.get(providerRequest('megabox'))).dataUrl).toBeTruthy();
+      expect(f.transport.mock.calls.map(([input]) => input)).toEqual([
+        megaboxUrl().replace('_150.png', '.png'),
+        megaboxUrl().replace('_150.png', '_420.png'),
+      ]);
+      expect(body?.locked ?? false).toBe(false);
+      if (body && !getReader!.mock.calls.length) expect(cancelBody).toHaveBeenCalledTimes(1);
+    },
+  );
+  it('applies the 1 MiB budget separately to each candidate', async () => {
+    const bytes = Buffer.alloc(1024 * 1024);
+    PNG.copy(bytes);
+    const inspect = vi
+      .fn<ImageInspector>()
+      .mockReturnValueOnce(undefined)
+      .mockReturnValue({ width: 4000, height: 4000 });
+    const f = fixture(
+      async () => new Response(bytes, { headers: { 'content-type': 'image/png' } }),
+      inspect,
+      'megabox',
+    );
+    expect((await f.service.get(providerRequest('megabox'))).dataUrl).toBeTruthy();
+    expect(f.transport).toHaveBeenCalledTimes(2);
+    expect(inspect).toHaveBeenCalledTimes(2);
+  });
+  it('shares a fallback, allows one waiter to cancel, and caches by the source identity', async () => {
+    let release!: (response: Response) => void;
+    const f = fixture(undefined, undefined, 'megabox');
+    f.transport
+      .mockResolvedValueOnce(new Response('missing', { status: 404 }))
+      .mockImplementationOnce(
+        async () =>
+          new Promise((resolve) => {
+            release = resolve;
+          }),
+      );
+    const first = f.service
+      .get(providerRequest('megabox', '1', 'first'))
+      .catch(() => ({ cancelled: true }));
+    await vi.waitFor(() => expect(f.transport).toHaveBeenCalledTimes(2));
+    const second = f.service.get(providerRequest('megabox', '1', 'second'));
+    await Promise.resolve();
+    f.service.cancel('first');
+    expect(await first).toEqual({ cancelled: true });
+    expect(f.transport.mock.calls[1][1]!.signal!.aborted).toBe(false);
+    release(imageResponse());
+    expect((await second).dataUrl).toBeTruthy();
+    await f.service.get(providerRequest('megabox', '1', 'cached'));
+    await f.service.get({ provider: 'megabox', movieTitle: '  MOVIE   1 ', requestId: 'legacy' });
+    expect(f.transport).toHaveBeenCalledTimes(2);
+    f.catalog.movies[0].posterUrl = megaboxUrl().replace('poster_1_', 'changed_1_');
+    await f.service.get(providerRequest('megabox', '1', 'changed'));
+    expect(f.transport).toHaveBeenCalledTimes(3);
+    expect(f.transport.mock.calls[2][0]).toBe(
+      f.catalog.movies[0].posterUrl!.replace('_150.png', '.png'),
+    );
+  });
+  it('negative-caches only after exhausting the candidates and retries after 30 seconds', async () => {
+    const f = fixture(async () => new Response('missing', { status: 404 }), undefined, 'megabox');
+    expect(await f.service.get(providerRequest('megabox'))).toEqual({});
+    expect(f.transport).toHaveBeenCalledTimes(3);
+    f.advance(29999);
+    await f.service.get(providerRequest('megabox', '1', 'negative'));
+    expect(f.transport).toHaveBeenCalledTimes(3);
+    f.advance(1);
+    await f.service.get(providerRequest('megabox', '1', 'retry'));
+    expect(f.transport).toHaveBeenCalledTimes(6);
+  });
+  it('keeps the original 10 second deadline when fallback starts after 9 seconds', async () => {
+    vi.useFakeTimers();
+    let release!: (response: Response) => void;
+    const cancel = vi.fn();
+    const f = fixture(
+      async () =>
+        new Response(new ReadableStream({ start() {}, cancel }), {
+          headers: { 'content-type': 'image/png' },
+        }),
+      undefined,
+      'megabox',
+    );
+    f.transport.mockImplementationOnce(
+      async () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    const settled = vi.fn();
+    const pending = f.service.get(providerRequest('megabox')).then((result) => {
+      settled();
+      return result;
+    });
+    await vi.advanceTimersByTimeAsync(9000);
+    release(new Response('missing', { status: 404 }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.transport).toHaveBeenCalledTimes(2);
+    expect(f.transport.mock.calls[0][1]!.signal).toBe(f.transport.mock.calls[1][1]!.signal);
+    await vi.advanceTimersByTimeAsync(999);
+    expect(settled).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await pending).toEqual({});
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(f.transport).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it.each(['cancel', 'dispose', 'timeout'] as const)(
+    'ignores a late fetch after %s without fallback or caching',
+    async (action) => {
+      vi.useFakeTimers();
+      let release!: (response: Response) => void;
+      const inspect = vi.fn<ImageInspector>(() => ({ width: 1, height: 1 }));
+      const f = fixture(undefined, inspect, 'megabox');
+      f.transport.mockImplementationOnce(
+        async () =>
+          new Promise((resolve) => {
+            release = resolve;
+          }),
+      );
+      const pending = f.service.get(providerRequest('megabox')).catch(() => ({}));
+      await vi.advanceTimersByTimeAsync(0);
+      if (action === 'cancel') f.service.cancel('request-1');
+      else if (action === 'dispose') f.service.dispose();
+      else await vi.advanceTimersByTimeAsync(10000);
+      await pending;
+      const response = imageResponse();
+      const cancel = vi.spyOn(response.body!, 'cancel');
+      release(response);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(inspect).not.toHaveBeenCalled();
+      expect(f.transport).toHaveBeenCalledTimes(1);
+      expect(f.transport.mock.calls[0][1]!.signal!.aborted).toBe(true);
+      if (action !== 'dispose') {
+        f.advance(30000);
+        expect(
+          (await f.service.get(providerRequest('megabox', '1', 'retry'))).dataUrl,
+        ).toBeTruthy();
+        expect(f.transport).toHaveBeenCalledTimes(2);
+      }
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
+  it('ignores a removed job while a replacement with the same source is active', async () => {
+    vi.useFakeTimers();
+    const releases: Array<(response: Response) => void> = [];
+    const f = fixture(
+      async () =>
+        new Promise((resolve) => {
+          releases.push(resolve);
+        }),
+      undefined,
+      'megabox',
+    );
+    const removed = f.service.get(providerRequest('megabox', '1', 'removed')).catch(() => ({}));
+    await vi.advanceTimersByTimeAsync(0);
+    f.service.cancel('removed');
+    await removed;
+    const replacement = f.service.get(providerRequest('megabox', '1', 'replacement'));
+    await vi.advanceTimersByTimeAsync(0);
+    releases[0](imageResponse());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.transport).toHaveBeenCalledTimes(2);
+    expect(f.transport.mock.calls[1][1]!.signal!.aborted).toBe(false);
+    expect(vi.getTimerCount()).toBe(1);
+    releases[1](new Response('missing', { status: 404 }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.transport).toHaveBeenCalledTimes(3);
+    expect(f.transport.mock.calls[2][0]).toBe(megaboxUrl().replace('_150.png', '_420.png'));
+    releases[2](imageResponse());
+    expect((await replacement).dataUrl).toBeTruthy();
+    await f.service.get(providerRequest('megabox', '1', 'cached-replacement'));
+    expect(f.transport).toHaveBeenCalledTimes(3);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it.each(['cancel', 'dispose', 'timeout'] as const)(
+    'cancels and unlocks a pending reader after %s',
+    async (action) => {
+      vi.useFakeTimers();
+      const cancel = vi.fn();
+      const response = new Response(new ReadableStream({ start() {}, cancel }), {
+        headers: { 'content-type': 'image/png' },
+      });
+      const f = fixture(async () => response, undefined, 'megabox');
+      const pending = f.service.get(providerRequest('megabox')).catch(() => ({}));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(response.body!.locked).toBe(true);
+      if (action === 'cancel') f.service.cancel('request-1');
+      else if (action === 'dispose') f.service.dispose();
+      else await vi.advanceTimersByTimeAsync(10000);
+      await pending;
+      await vi.advanceTimersByTimeAsync(0);
+      expect(cancel).toHaveBeenCalledTimes(1);
+      expect(response.body!.locked).toBe(false);
+      expect(f.transport).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
+  it('does not start fallback if the deadline expires while response cleanup is pending', async () => {
+    vi.useFakeTimers();
+    let finishCancel!: () => void;
+    const response = new Response(
+      new ReadableStream({
+        cancel: () =>
+          new Promise<void>((resolve) => {
+            finishCancel = resolve;
+          }),
+      }),
+      { headers: { 'content-type': 'text/html' } },
+    );
+    const f = fixture(async () => response, undefined, 'megabox');
+    const pending = f.service.get(providerRequest('megabox'));
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(await pending).toEqual({});
+    finishCancel();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.transport).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it('keeps three job slots during fallback and starts queued work only when one finishes', async () => {
+    vi.useFakeTimers();
+    const releases: Array<(response: Response) => void> = [];
+    const f = fixture(
+      async () =>
+        new Promise((resolve) => {
+          releases.push(resolve);
+        }),
+      undefined,
+      'megabox',
+    );
+    const pending = Array.from({ length: 4 }, (_, i) =>
+      f.service.get(providerRequest('megabox', String(i + 1))).catch(() => ({})),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.transport).toHaveBeenCalledTimes(3);
+    releases[0](new Response('missing', { status: 404 }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.transport).toHaveBeenCalledTimes(4);
+    expect(f.transport.mock.calls[3][0]).toBe(megaboxUrl().replace('_150.png', '_420.png'));
+    releases[3](imageResponse());
+    await pending[0];
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.transport).toHaveBeenCalledTimes(5);
+    expect(f.transport.mock.calls[4][0]).toBe(megaboxUrl('4').replace('_150.png', '.png'));
+    f.service.dispose();
+    await Promise.all(pending);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
 describe('bounded poster service', () => {

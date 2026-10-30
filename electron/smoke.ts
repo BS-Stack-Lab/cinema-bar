@@ -36,7 +36,8 @@ export function createSmokeRuntime(app: App) {
   const downloadsPath = path.join(profile, 'Downloads');
   mkdirSync(downloadsPath, { recursive: true });
   const updateBytes = Buffer.from('Cinema Bar isolated updater fixture');
-  const installerName = `Cinema-Bar-0.3.0-${process.platform === 'darwin' ? 'macOS-arm64.dmg' : 'Windows-x64-Setup.exe'}`;
+  const updateVersion = `${Number(app.getVersion().split('.')[0]) + 1}.0.0`;
+  const installerName = `Cinema-Bar-${updateVersion}-${process.platform === 'darwin' ? 'macOS-arm64.dmg' : 'Windows-x64-Setup.exe'}`;
   const updateObservations = {
     metadataCalls: 0,
     downloadCalls: 0,
@@ -66,7 +67,7 @@ export function createSmokeRuntime(app: App) {
       if (url === 'https://api.github.com/repos/BS-Stack-Lab/cinema-bar/releases/latest') {
         updateObservations.metadataCalls++;
         return Response.json({
-          tag_name: 'v0.3.0',
+          tag_name: `v${updateVersion}`,
           draft: false,
           prerelease: false,
           assets: [
@@ -76,14 +77,14 @@ export function createSmokeRuntime(app: App) {
               name: installerName,
               size: updateBytes.length,
               digest: `sha256:${createHash('sha256').update(updateBytes).digest('hex')}`,
-              browser_download_url: `https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.3.0/${installerName}`,
+              browser_download_url: `https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v${updateVersion}/${installerName}`,
             },
           ],
         });
       }
       assert.equal(
         url,
-        `https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v0.3.0/${installerName}`,
+        `https://github.com/BS-Stack-Lab/cinema-bar/releases/download/v${updateVersion}/${installerName}`,
       );
       updateObservations.downloadCalls++;
       if (updateObservations.hangDownload)
@@ -160,6 +161,7 @@ export function createSmokeRuntime(app: App) {
     codecEvidence,
     recordIdentity,
     updateOptions,
+    updateVersion,
     updateBytes,
     updateObservations,
     updateIsolation,
@@ -299,7 +301,7 @@ export async function runSmoke({
     check(
       'update-check-stable-platform',
       available.phase === 'available' &&
-        available.availableVersion === '0.3.0' &&
+        available.availableVersion === runtime.updateVersion &&
         available.platformLabel.includes(process.platform === 'darwin' ? 'DMG' : 'Setup'),
       { ...available, metadataCalls: observations.metadataCalls },
     );

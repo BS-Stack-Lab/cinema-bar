@@ -241,6 +241,59 @@ describe('QA accessible renderer', () => {
   });
 });
 describe('local alert settings and factual status', () => {
+  it.each([5, 3600])(
+    'saves the valid %i-second interval and displays the returned snapshot',
+    async (intervalSeconds) => {
+      const user = userEvent.setup();
+      const { api } = mount();
+      await screen.findByRole('heading', { name: /Cinema Bar/ });
+      await user.click(screen.getByRole('tab', { name: '설정' }));
+      const input = screen.getByRole('spinbutton', { name: '조회 간격' }) as HTMLInputElement;
+      expect(screen.getByText('조회 간격 (5~3600초)')).toBeTruthy();
+      expect(input).toMatchObject({
+        min: '5',
+        max: '3600',
+        step: '1',
+        required: true,
+        value: '120',
+      });
+      expect(screen.getByText('120초 간격')).toBeTruthy();
+      expect(api.updateSettings).not.toHaveBeenCalled();
+      vi.mocked(api.updateSettings).mockResolvedValueOnce({
+        ...empty,
+        settings: { ...empty.settings, intervalSeconds },
+      });
+      await user.clear(input);
+      await user.type(input, String(intervalSeconds));
+      expect(input.checkValidity()).toBe(true);
+      await user.click(screen.getByRole('button', { name: '저장' }));
+      await waitFor(() => expect(api.updateSettings).toHaveBeenCalledTimes(1));
+      expect(api.updateSettings).toHaveBeenCalledWith({ intervalSeconds });
+      expect(await screen.findByText(`${intervalSeconds}초 간격`)).toBeTruthy();
+    },
+  );
+  it.each([
+    ['4', 'rangeUnderflow'],
+    ['3601', 'rangeOverflow'],
+    ['5.5', 'stepMismatch'],
+    ['', 'valueMissing'],
+  ] as const)(
+    'blocks invalid interval %s through native form validity without saving',
+    async (value, validity) => {
+      const user = userEvent.setup();
+      const { api } = mount();
+      await screen.findByRole('heading', { name: /Cinema Bar/ });
+      await user.click(screen.getByRole('tab', { name: '설정' }));
+      const input = screen.getByRole('spinbutton', { name: '조회 간격' }) as HTMLInputElement;
+      await user.clear(input);
+      if (value) await user.type(input, value);
+      expect(input.validity[validity]).toBe(true);
+      expect(input.checkValidity()).toBe(false);
+      await user.click(screen.getByRole('button', { name: '저장' }));
+      expect(api.updateSettings).not.toHaveBeenCalled();
+      expect(screen.getByText('120초 간격')).toBeTruthy();
+    },
+  );
   it('allows webhook-free monitoring and persists a strict local toggle through the narrow settings API', async () => {
     const snapshot = { ...empty, rules: [rule] };
     const { api } = mount(snapshot);

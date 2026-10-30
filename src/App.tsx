@@ -570,11 +570,11 @@ export default function App() {
                 }}
               >
                 <label>
-                  조회 간격 (60~3600초)
+                  조회 간격 (5~3600초)
                   <div className="buttonRow">
                     <input
                       type="number"
-                      min="60"
+                      min="5"
                       max="3600"
                       step="1"
                       required

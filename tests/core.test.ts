@@ -200,7 +200,7 @@ describe('QA provider and predicate boundaries', () => {
       sessionIdentity(session),
     );
   });
-  it('rule-validation: rejects invalid and oversized dates, fields and intervals', () => {
+  it('rule-validation: rejects invalid and oversized dates and fields', () => {
     for (const input of [
       { movieTitle: '' },
       { theaterId: '' },
@@ -226,9 +226,19 @@ describe('QA provider and predicate boundaries', () => {
     const { revision: _r, ...input } = rule;
     void _r;
     expect(validateRule(input)).toMatchObject({ movieTitle: rule.movieTitle });
-    for (const seconds of [0, 59, 3601, 1.5, '120'])
-      expect(() => validateSettings({ intervalSeconds: seconds })).toThrow();
     expect(() => validateRule({ ...input, movieTitle: 'x'.repeat(121) })).toThrow();
+  });
+  it('settings interval accepts only integers from 5 through 3600 at validation and IPC boundaries', () => {
+    for (const intervalSeconds of [5, 6, 59, 3600]) {
+      const value = { intervalSeconds };
+      expect(validateSettings(value)).toEqual(value);
+      expect(validateIpc('updateSettings', value)).toEqual(value);
+    }
+    for (const intervalSeconds of [4, 0, -1, 5.5, '5', NaN, Infinity, 3601]) {
+      const value = { intervalSeconds };
+      expect(() => validateSettings(value)).toThrow('조회 간격은 5~3600초로 입력하세요.');
+      expect(() => validateIpc('updateSettings', value)).toThrow('5~3600');
+    }
   });
 });
 describe('QA engine durable state', () => {
@@ -584,10 +594,50 @@ describe('QA engine durable state', () => {
 });
 
 describe('QA deadline and commit regressions', () => {
+  it('five-second normal deadlines retain provider failure backoff', async () => {
+    const f = await fixture();
+    f.setSessions([]);
+    await f.engine.updateSettings({ intervalSeconds: 5 });
+    await settle(f.engine);
+    expect(f.provider).toHaveBeenCalledTimes(1);
+    expect(f.engine.snapshot().nextAt).toBe(NOW + 5000);
+    f.advance(4999);
+    f.engine.start();
+    await settle(f.engine);
+    expect(f.provider).toHaveBeenCalledTimes(1);
+    f.advance(1);
+    f.engine.start();
+    await settle(f.engine);
+    expect(f.provider).toHaveBeenCalledTimes(2);
+    expect(f.engine.snapshot().nextAt).toBe(NOW + 10000);
+    f.provider.mockRejectedValueOnce(new ProviderError('공급자 오류'));
+    f.advance(5000);
+    f.engine.start();
+    await settle(f.engine);
+    expect(f.provider).toHaveBeenCalledTimes(3);
+    expect(f.store.state.progress[rule.id]).toMatchObject({
+      failures: 1,
+      nextAt: NOW + 70000,
+    });
+    f.advance(59999);
+    f.engine.start();
+    await settle(f.engine);
+    expect(f.provider).toHaveBeenCalledTimes(3);
+    f.advance(1);
+    f.engine.start();
+    await settle(f.engine);
+    expect(f.provider).toHaveBeenCalledTimes(4);
+  });
   it('provider Retry-After survives manual refresh and restart', async () => {
     const f = await fixture();
     f.provider.mockRejectedValueOnce(new ProviderError('HTTP 429', 240000));
     await f.engine.refresh();
+    await f.engine.updateSettings({ intervalSeconds: 5 });
+    await settle(f.engine);
+    expect(f.store.state.progress[rule.id]).toMatchObject({
+      nextAt: NOW + 5000,
+      retryUntil: NOW + 240000,
+    });
     await f.engine.refresh();
     expect(f.provider).toHaveBeenCalledTimes(1);
     f.advance(239999);
@@ -675,6 +725,26 @@ describe('QA deadline and commit regressions', () => {
 });
 
 describe('QA persistence, login and IPC', () => {
+  it('five-second settings survive reload without changing unrelated state or accepting invalid input', async () => {
+    const f = await fixture();
+    await f.engine.setPaused(true);
+    expect(createState().settings.intervalSeconds).toBe(120);
+    const before = structuredClone(f.store.state);
+    for (const intervalSeconds of [4, 0, -1, 5.5, '5', NaN, Infinity, 3601])
+      await expect(f.engine.updateSettings({ intervalSeconds })).rejects.toThrow('5~3600');
+    await expect(f.engine.updateSettings({ intervalSeconds: 5, unknown: true })).rejects.toThrow();
+    expect(f.store.state).toEqual(before);
+    expect((await f.engine.updateSettings({ intervalSeconds: 5 })).settings.intervalSeconds).toBe(
+      5,
+    );
+    const restart = new Store(f.store.directory);
+    await restart.load();
+    expect(restart.recoveryError).toBeUndefined();
+    expect(validateState(restart.state)).toEqual({
+      ...before,
+      settings: { ...before.settings, intervalSeconds: 5 },
+    });
+  });
   it('atomic-storage-recovery: serialization, write failure, backup, double corruption and future schema', async () => {
     const store = await storeFixture();
     await Promise.all(

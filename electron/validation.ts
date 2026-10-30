@@ -98,10 +98,10 @@ export function validateSettings(value: unknown) {
   if (v.intervalSeconds !== undefined) {
     if (
       !Number.isInteger(v.intervalSeconds) ||
-      (v.intervalSeconds as number) < 60 ||
+      (v.intervalSeconds as number) < 5 ||
       (v.intervalSeconds as number) > 3600
     )
-      throw new Error('조회 간격은 60~3600초로 입력하세요.');
+      throw new Error('조회 간격은 5~3600초로 입력하세요.');
     result.intervalSeconds = v.intervalSeconds as number;
   }
   if (v.shouldStartAtLogin !== undefined) result.shouldStartAtLogin = flag(v.shouldStartAtLogin);
